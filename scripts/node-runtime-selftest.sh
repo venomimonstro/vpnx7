@@ -72,9 +72,17 @@ set -e
 for arg in "$@"; do
   case "$arg" in
     */desired)
-      cat <<'JSON'
-{"node":{"id":"11111111-1111-4111-8111-111111111111","name":"test-node","geo":"Test","host":"203.0.113.10","port":443,"sni":"www.microsoft.com","enabled":true},"clients":[{"id":"c1","name":"test","uuid":"22222222-2222-4222-8222-222222222222","email":"vpnx7-test","flow":"xtls-rprx-vision"}]}
-JSON
+      case "${VPNX7_SELFTEST_MODE:-one}" in
+        empty)
+          printf '%s\n' '{"node":{"id":"11111111-1111-4111-8111-111111111111","name":"test-node","geo":"Test","host":"203.0.113.10","port":443,"sni":"www.microsoft.com","enabled":true},"clients":[]}'
+          ;;
+        disabled)
+          printf '%s\n' '{"node":{"id":"11111111-1111-4111-8111-111111111111","name":"test-node","geo":"Test","host":"203.0.113.10","port":443,"sni":"www.microsoft.com","enabled":false},"clients":[]}'
+          ;;
+        *)
+          printf '%s\n' '{"node":{"id":"11111111-1111-4111-8111-111111111111","name":"test-node","geo":"Test","host":"203.0.113.10","port":443,"sni":"www.microsoft.com","enabled":true},"clients":[{"id":"c1","name":"test","uuid":"22222222-2222-4222-8222-222222222222","email":"vpnx7-test","flow":"xtls-rprx-vision"}]}'
+          ;;
+      esac
       exit 0
       ;;
     */report)
@@ -88,9 +96,9 @@ EOF
 
 cat >"${TMP}/fakebin/systemctl" <<'EOF'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >>"${VPNX7_SELFTEST_SYSTEMCTL_LOG:?}"
 case "${1:-}" in
-  restart) exit 0 ;;
-  is-active) exit 0 ;;
+  restart|enable|disable|is-active) exit 0 ;;
   *) exit 0 ;;
 esac
 EOF
@@ -102,6 +110,26 @@ EOF
 
 chmod 0755 "${TMP}/fakebin/"*
 
+SYSTEMCTL_LOG="${TMP}/systemctl.log"
+: >"${SYSTEMCTL_LOG}"
+
+echo "selftest: active node with zero clients"
+VPNX7_SELFTEST_MODE=empty \
+VPNX7_SELFTEST_SYSTEMCTL_LOG="${SYSTEMCTL_LOG}" \
+PATH="${TMP}/fakebin:${PATH}" bash -x "${TMP}/node-sync.sh"
+
+/usr/local/bin/xray run -test -config /etc/xray/config.json >/dev/null
+jq -e '
+  .inbounds[0].protocol == "vless" and
+  .inbounds[0].port == 443 and
+  (.inbounds[0].settings.clients | length) == 0 and
+  .inbounds[0].streamSettings.security == "reality" and
+  .inbounds[0].streamSettings.realitySettings.target == "www.microsoft.com:443"
+' /etc/xray/config.json >/dev/null
+
+echo "selftest: active node with one client"
+VPNX7_SELFTEST_MODE=one \
+VPNX7_SELFTEST_SYSTEMCTL_LOG="${SYSTEMCTL_LOG}" \
 PATH="${TMP}/fakebin:${PATH}" bash -x "${TMP}/node-sync.sh"
 
 /usr/local/bin/xray run -test -config /etc/xray/config.json >/dev/null
@@ -113,5 +141,12 @@ jq -e '
   .inbounds[0].streamSettings.realitySettings.target == "www.microsoft.com:443" and
   .inbounds[0].streamSettings.realitySettings.shortIds[0] == "0011223344556677"
 ' /etc/xray/config.json >/dev/null
+
+echo "selftest: centrally disabled node"
+: >"${SYSTEMCTL_LOG}"
+VPNX7_SELFTEST_MODE=disabled \
+VPNX7_SELFTEST_SYSTEMCTL_LOG="${SYSTEMCTL_LOG}" \
+PATH="${TMP}/fakebin:${PATH}" bash -x "${TMP}/node-sync.sh"
+grep -Fq 'disable --now vpnx7-xray.service' "${SYSTEMCTL_LOG}"
 
 echo "VPNX7 NODE RUNTIME SELFTEST PASS"

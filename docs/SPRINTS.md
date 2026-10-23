@@ -1,58 +1,73 @@
-# VPNX7 delivery plan
+# VPNX7 delivery / acceptance state
 
-## Sprint 0 — working tunnel first
+## Core transport and control — implemented
 
-Status: implemented in the initial repository foundation.
+- FastAPI + SQLite WAL control plane.
+- Admin bearer authentication.
+- Automatic first-time node enrollment.
+- Individual node credentials.
+- VLESS + XTLS Vision + REALITY on TCP/443.
+- Pull desired-state sync every minute.
+- Validate-before-reload.
+- Runtime rollback of bad Xray config.
+- Candidate Xray binary rollback.
+- Pinned Xray version and SHA-256.
+- Healthy-node filtering in subscriptions.
+- INCY-compatible subscription and deep link.
+- Client creation/revocation/expiry.
+- Telegram access/status bot.
+- Minimal public request flow.
+- Duplicate enrollment protection.
 
-- Control plane on FastAPI + SQLite.
-- Admin token authentication.
-- Automatic node bootstrap.
-- Xray VLESS + XTLS Vision + REALITY on TCP/443.
-- Per-node token after bootstrap.
-- Pull-based desired-state sync every minute.
-- Validate-before-reload safety.
-- INCY-compatible subscription with all active geo nodes.
-- Minimal connection page.
-- Manual client creation in admin API/UI.
-- Optional Telegram access bot.
+## Operational safety — implemented
 
-**Acceptance test:** create one client, install one node, import the subscription in INCY, open an external IP check through the tunnel, reboot both servers independently, and confirm reconnection.
+- Exact top-level Python dependency pins.
+- Python compile gate.
+- Shell syntax + ShellCheck gate.
+- Legacy database migration self-test.
+- Control API lifecycle self-test.
+- Staged control release.
+- Automatic control release rollback.
+- Online SQLite backup with integrity check.
+- Daily persistent backup timer.
+- Mandatory pre-deploy backup.
+- Restore integrity validation.
+- Automatic database rollback after failed restore.
+- Diagnostics for services, node sync, config, port, backup and disk.
+- CI on every main push.
+- Real pinned-Xray runtime/config CI test.
 
-## Sprint 1 — operational stability
+## Physical two-server acceptance — required before calling the deployed instance stable
 
-- HTTPS setup for the control plane.
-- Automated SQLite backups and restore command.
-- Admin node enable/disable controls.
-- Health dashboard: last sync, Xray service status, latency probe.
-- Expiry extension and revocation UI.
-- Structured journal diagnostics command.
-- Safe update command with rollback to previous Xray binary/config.
+This cannot be proven inside repository CI because it depends on the actual VPS providers, firewalls, routes and client network.
 
-## Sprint 2 — two-node geo operation
+Acceptance requires:
 
-- Install the second geo node.
-- Verify subscription refresh adds both servers.
-- Node maintenance/drain mode.
-- Automated synthetic connection probe per geo.
-- Alert if a node misses multiple sync intervals.
+1. install control on the main VPS;
+2. enroll the main VPS and the second VPS as nodes;
+3. create one real client;
+4. import the subscription into INCY;
+5. connect through each geo and verify the external IP;
+6. transfer sustained traffic through each node;
+7. reboot each VPN node independently;
+8. reboot the control server;
+9. stop the control service while an existing tunnel is active and confirm the tunnel remains usable;
+10. introduce a deliberately invalid candidate config in a controlled test and confirm rollback;
+11. confirm client revocation disappears from both nodes after sync;
+12. confirm a stopped node ages out of a refreshed subscription;
+13. run `diagnose.sh` on all hosts and require zero failures.
 
-## Sprint 3 — sales path
+Only after all thirteen checks pass should the concrete deployed pair be called accepted.
 
-- Real plans and prices.
-- Payment provider integration.
-- Idempotent payment webhook.
-- Automatic activation/renewal.
-- Telegram purchase/status buttons.
-- Web customer cabinet.
-- Receipts/legal pages as applicable.
+## Before public sales
 
-## Sprint 4 — only if measurements require it
+Not part of the private-working-VPN acceptance gate:
 
-Do not add protocols just because they exist.
+- trusted HTTPS for control/subscription;
+- real payment provider and idempotent webhooks;
+- legal/fiscal pages/receipts as applicable;
+- customer cabinet;
+- abuse/traffic policy;
+- external monitoring from independent networks.
 
-Possible fallback:
-
-- AmneziaWG/WireGuard for networks where it is demonstrably better; or
-- a second Xray transport if a target ISP blocks the primary path.
-
-The fallback is added only after collecting failure data from the VLESS REALITY path.
+These are commercial requirements, not reasons to delay validating the core VPN for personal work.

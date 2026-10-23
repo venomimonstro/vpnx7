@@ -54,7 +54,23 @@ EOF
 
 cat >"${FAKEBIN}/curl" <<'EOF'
 #!/usr/bin/env bash
-exit 0
+case "${VPNX7_SELFTEST_CURL_MODE:-success}" in
+  success)
+    exit 0
+    ;;
+  fail_then_pass)
+    counter="${VPNX7_SELFTEST_CURL_COUNTER:?}"
+    n=0
+    [ ! -f "${counter}" ] || n="$(cat "${counter}")"
+    n=$((n + 1))
+    printf '%s\n' "${n}" >"${counter}"
+    if [ "${n}" -le "${VPNX7_SELFTEST_FAIL_COUNT:-2}" ]; then
+      exit 22
+    fi
+    exit 0
+    ;;
+esac
+exit 1
 EOF
 chmod 0755 "${FAKEBIN}/systemctl" "${FAKEBIN}/curl"
 
@@ -70,5 +86,42 @@ PY
 [ "${VALUE}" = "new" ]
 
 find "${BACKUPS}" -maxdepth 1 -name 'vpnx7-*.sqlite3.gz' -type f | grep -q .
+
+echo "selftest: failed restored health triggers database rollback"
+python3 - "${DATA}/vpnx7.db" <<'PY'
+import sqlite3, sys
+c=sqlite3.connect(sys.argv[1])
+c.execute("DELETE FROM proof")
+c.execute("INSERT INTO proof(value) VALUES('old-before-failed-restore')")
+c.commit()
+c.close()
+PY
+
+COUNTER="${TMP}/curl-counter"
+rm -f "${COUNTER}"
+set +e
+PATH="${FAKEBIN}:${PATH}" \
+VPNX7_SELFTEST_CURL_MODE=fail_then_pass \
+VPNX7_SELFTEST_CURL_COUNTER="${COUNTER}" \
+VPNX7_SELFTEST_FAIL_COUNT=2 \
+VPNX7_ENV_FILE="${ENV_FILE}" \
+VPNX7_DATA_DIR="${DATA}" \
+VPNX7_BACKUP_DIR="${BACKUPS}" \
+VPNX7_INSTALL_DIR="${INSTALL}" \
+VPNX7_HEALTH_ATTEMPTS=2 \
+VPNX7_HEALTH_SLEEP=0 \
+bash "${ROOT}/scripts/restore-db.sh" "${TMP}/replacement.sqlite3.gz"
+RC=$?
+set -e
+[ "${RC}" -eq 12 ]
+
+VALUE="$(python3 - "${DATA}/vpnx7.db" <<'PY'
+import sqlite3, sys
+c=sqlite3.connect(sys.argv[1])
+print(c.execute("SELECT value FROM proof").fetchone()[0])
+c.close()
+PY
+)"
+[ "${VALUE}" = "old-before-failed-restore" ]
 
 echo "VPNX7 RESTORE SELFTEST PASS"

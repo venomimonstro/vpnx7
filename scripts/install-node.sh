@@ -82,16 +82,39 @@ if [ -s "${ENV_FILE}" ]; then
     exit 4
   fi
 
-  NODE_NAME="${NODE_NAME}"
-  NODE_GEO="${ARG_NODE_GEO:-${NODE_GEO}}"
-  NODE_HOST="${ARG_NODE_HOST:-${NODE_HOST:-}}"
-  NODE_PORT="${ARG_PORT:-${NODE_PORT:-443}}"
-  REALITY_SNI="${ARG_SNI:-${REALITY_SNI:-www.microsoft.com}}"
-
-  if [ -z "${REALITY_PRIVATE_KEY:-}" ] || [ -z "${REALITY_SHORT_ID:-}" ] ||      [ -z "${NODE_ID:-}" ] || [ -z "${NODE_TOKEN:-}" ]; then
+  if [ -z "${REALITY_PRIVATE_KEY:-}" ] || [ -z "${REALITY_SHORT_ID:-}" ] || \
+     [ -z "${NODE_ID:-}" ] || [ -z "${NODE_TOKEN:-}" ]; then
     echo "Existing node state is incomplete. Refusing to rotate identity automatically." >&2
     exit 5
   fi
+
+  PREVIOUS_DESIRED="$(curl -fsS --connect-timeout 8 --max-time 20 \
+    -H "Authorization: Bearer ${NODE_TOKEN}" \
+    "${CONTROL_URL}/api/v1/nodes/${NODE_ID}/desired")" || {
+      echo "Stored node credentials are no longer accepted." >&2
+      echo "No identity/key rotation was attempted." >&2
+      exit 11
+    }
+
+  CONTROL_NODE_NAME="$(printf '%s' "${PREVIOUS_DESIRED}" | jq -r '.node.name // empty')"
+  CONTROL_NODE_GEO="$(printf '%s' "${PREVIOUS_DESIRED}" | jq -r '.node.geo // empty')"
+  CONTROL_NODE_PORT="$(printf '%s' "${PREVIOUS_DESIRED}" | jq -r '.node.port // 443')"
+  CONTROL_NODE_SNI="$(printf '%s' "${PREVIOUS_DESIRED}" | jq -r '.node.sni // empty')"
+
+  if [ -z "${CONTROL_NODE_NAME}" ] || [ -z "${CONTROL_NODE_GEO}" ] || [ -z "${CONTROL_NODE_SNI}" ]; then
+    echo "Control plane returned incomplete node metadata." >&2
+    exit 11
+  fi
+  if [ -n "${ARG_NODE_NAME}" ] && [ "${ARG_NODE_NAME}" != "${CONTROL_NODE_NAME}" ]; then
+    echo "Renaming an enrolled node during reinstall is intentionally blocked." >&2
+    exit 4
+  fi
+
+  NODE_NAME="${CONTROL_NODE_NAME}"
+  NODE_GEO="${ARG_NODE_GEO:-${CONTROL_NODE_GEO}}"
+  NODE_HOST="${ARG_NODE_HOST:-${NODE_HOST:-}}"
+  NODE_PORT="${ARG_PORT:-${NODE_PORT:-${CONTROL_NODE_PORT}}}"
+  REALITY_SNI="${ARG_SNI:-${REALITY_SNI:-${CONTROL_NODE_SNI}}}"
 
   KEY_INFO="$("${CANDIDATE}" x25519 -i "${REALITY_PRIVATE_KEY}")"
   REALITY_PUBLIC_KEY="$(printf '%s\n' "${KEY_INFO}" | awk -F': *' 'tolower($1) ~ /publickey/ || tolower($1) ~ /^password/ {print $2; exit}')"

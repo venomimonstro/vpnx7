@@ -225,7 +225,7 @@ set -Eeuo pipefail
 source /etc/vpnx7-node/node.env
 
 TMP="$(mktemp)"
-CFG="$(mktemp)"
+CFG="$(mktemp --suffix=.json)"
 BACKUP="$(mktemp)"
 XRAY_TEST_LOG="$(mktemp)"
 trap 'rm -f "$TMP" "$CFG" "$BACKUP" "$XRAY_TEST_LOG"' EXIT

@@ -321,7 +321,7 @@ chmod 0600 "${ENV_FILE}.new"
 mv "${ENV_FILE}.new" "${ENV_FILE}"
 
 echo "[4/8] Installing fail-safe node sync..."
-cat >/usr/local/sbin/vpnx7-node-sync <<'SYNC'
+cat >"${SYNC_STAGE}" <<'SYNC'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 source /etc/vpnx7-node/node.env
@@ -453,10 +453,10 @@ curl -fsS --connect-timeout 5 --max-time 10   -H "Authorization: Bearer $NODE_TO
 
 echo "VPNX7 node sync OK; changed=$CHANGED; clients=$(printf '%s' "$CLIENTS" | jq 'length')"
 SYNC
-chmod 0755 /usr/local/sbin/vpnx7-node-sync
+chmod 0755 "${SYNC_STAGE}"
 
 echo "[5/8] Installing systemd units..."
-cat >/etc/systemd/system/vpnx7-xray.service <<EOF
+cat >"${UNIT_STAGE_DIR}/vpnx7-xray.service" <<EOF
 [Unit]
 Description=VPNX7 Xray node
 After=network-online.target
@@ -488,7 +488,7 @@ TasksMax=256
 WantedBy=multi-user.target
 EOF
 
-cat >/etc/systemd/system/vpnx7-node-sync.service <<EOF
+cat >"${UNIT_STAGE_DIR}/vpnx7-node-sync.service" <<EOF
 [Unit]
 Description=VPNX7 node desired-state sync
 After=network-online.target
@@ -503,7 +503,7 @@ PrivateTmp=true
 ProtectHome=true
 EOF
 
-cat >/etc/systemd/system/vpnx7-node-sync.timer <<EOF
+cat >"${UNIT_STAGE_DIR}/vpnx7-node-sync.timer" <<EOF
 [Unit]
 Description=VPNX7 node sync timer
 
@@ -518,28 +518,45 @@ Unit=vpnx7-node-sync.service
 WantedBy=timers.target
 EOF
 
-echo "[6/8] Installing verified Xray binary..."
-BINARY_BACKUP=""
-if [ -x "${XRAY_BIN}" ]; then
-  BINARY_BACKUP="${XRAY_BIN}.previous"
-  cp -a "${XRAY_BIN}" "${BINARY_BACKUP}"
+echo "[6/8] Installing staged node runtime..."
+if ! install -m 0755 "${SYNC_STAGE}" /usr/local/sbin/vpnx7-node-sync; then
+  abort_node_install 12
 fi
-install -m 0755 "${CANDIDATE}" "${XRAY_BIN}"
+if ! install -m 0644 "${UNIT_STAGE_DIR}/vpnx7-xray.service" /etc/systemd/system/vpnx7-xray.service || \
+   ! install -m 0644 "${UNIT_STAGE_DIR}/vpnx7-node-sync.service" /etc/systemd/system/vpnx7-node-sync.service || \
+   ! install -m 0644 "${UNIT_STAGE_DIR}/vpnx7-node-sync.timer" /etc/systemd/system/vpnx7-node-sync.timer; then
+  abort_node_install 12
+fi
+if ! install -m 0755 "${CANDIDATE}" "${XRAY_BIN}"; then
+  abort_node_install 12
+fi
+
 install -d -m 0755 /usr/local/share/xray
 [ ! -f "${TMP_DIR}/xray/geoip.dat" ] || install -m 0644 "${TMP_DIR}/xray/geoip.dat" /usr/local/share/xray/geoip.dat
 [ ! -f "${TMP_DIR}/xray/geosite.dat" ] || install -m 0644 "${TMP_DIR}/xray/geosite.dat" /usr/local/share/xray/geosite.dat
 
-systemctl daemon-reload
-systemctl enable --now vpnx7-node-sync.timer >/dev/null
+if ! systemctl daemon-reload; then
+  abort_node_install 12
+fi
+
+if command -v systemd-analyze >/dev/null 2>&1; then
+  if ! systemd-analyze verify \
+      /etc/systemd/system/vpnx7-xray.service \
+      /etc/systemd/system/vpnx7-node-sync.service \
+      /etc/systemd/system/vpnx7-node-sync.timer; then
+    echo "New node systemd units failed verification." >&2
+    abort_node_install 12
+  fi
+fi
+
+if ! systemctl enable --now vpnx7-node-sync.timer >/dev/null; then
+  abort_node_install 12
+fi
 
 echo "[7/8] Applying desired state..."
 if ! systemctl start vpnx7-node-sync.service; then
-  echo "Node sync failed. Attempting local binary rollback." >&2
-  if [ -n "${BINARY_BACKUP}" ] && [ -x "${BINARY_BACKUP}" ]; then
-    install -m 0755 "${BINARY_BACKUP}" "${XRAY_BIN}"
-    systemctl restart vpnx7-xray.service >/dev/null 2>&1 || true
-  fi
-  exit 12
+  echo "Node sync failed; restoring the previous runtime when available." >&2
+  abort_node_install 12
 fi
 
 echo "[8/8] Final node verification..."

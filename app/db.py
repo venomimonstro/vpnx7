@@ -45,9 +45,6 @@ ON clients(subscription_token);
 CREATE INDEX IF NOT EXISTS idx_clients_telegram_id
 ON clients(telegram_id);
 
-CREATE INDEX IF NOT EXISTS idx_nodes_last_sync_ok
-ON nodes(last_sync_ok);
-
 CREATE TABLE IF NOT EXISTS orders (
     id TEXT PRIMARY KEY,
     email TEXT,
@@ -111,6 +108,9 @@ def init_db() -> None:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(SCHEMA)
         _ensure_columns(conn)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_nodes_last_sync_ok ON nodes(last_sync_ok)"
+        )
         conn.execute(
             "INSERT OR REPLACE INTO metadata(key, value) VALUES('schema_version', '2')"
         )

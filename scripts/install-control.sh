@@ -212,7 +212,7 @@ if ! systemctl restart vpnx7-control.service; then
 else
   HEALTH_OK=0
   for _ in $(seq 1 20); do
-    if curl -fsS --max-time 2 http://127.0.0.1:${CONTROL_PORT}/healthz >/dev/null 2>&1; then
+    if curl -fsS --max-time 2 "http://127.0.0.1:${CONTROL_PORT}/healthz" >/dev/null 2>&1; then
       HEALTH_OK=1
       break
     fi
@@ -247,7 +247,7 @@ systemctl start vpnx7-backup.service
 systemctl is-active --quiet vpnx7-backup.timer
 
 echo "[7/7] Final verification..."
-curl -fsS --max-time 3 http://127.0.0.1:${CONTROL_PORT}/healthz
+curl -fsS --max-time 3 "http://127.0.0.1:${CONTROL_PORT}/healthz"
 echo
 systemctl is-active --quiet vpnx7-control.service
 

@@ -58,6 +58,9 @@ jobs:
       - name: Control-plane self-test
         run: python scripts/selftest.py
 
+      - name: SQLite backup round-trip self-test
+        run: python scripts/backup-selftest.py
+
       - name: Xray node runtime self-test
         if: matrix.python-version == '3.12'
         run: sudo bash scripts/node-runtime-selftest.sh

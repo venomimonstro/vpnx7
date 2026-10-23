@@ -17,7 +17,7 @@ if not db_path.is_file():
     raise SystemExit(f"database not found: {db_path}")
 
 backup_dir.mkdir(parents=True, exist_ok=True)
-stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
 target = backup_dir / f"vpnx7-{stamp}.sqlite3.gz"
 
 with tempfile.TemporaryDirectory(prefix="vpnx7-backup-") as tmp:

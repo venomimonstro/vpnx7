@@ -44,7 +44,13 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y --no-install-recommends   ca-certificates curl jq openssl unzip iproute2
+apt-get install -y --no-install-recommends   ca-certificates curl jq openssl unzip iproute2 util-linux
+
+exec 9>/run/lock/vpnx7-node-install.lock
+if ! flock -n 9; then
+  echo "Another VPNX7 node install/update is already running." >&2
+  exit 20
+fi
 
 ARCH="$(uname -m)"
 case "${ARCH}" in
@@ -345,6 +351,11 @@ else
 fi
 
 backup_existing_runtime
+if [ "${EXISTING}" -eq 1 ]; then
+  # Prevent the minute sync job from racing with binary/unit/config replacement.
+  systemctl stop vpnx7-node-sync.timer >/dev/null 2>&1 || true
+  systemctl stop vpnx7-node-sync.service >/dev/null 2>&1 || true
+fi
 
 {
   printf 'CONTROL_URL=%q\n' "${CONTROL_URL}"

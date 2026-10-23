@@ -201,19 +201,19 @@ else
   curl -fsS --connect-timeout 8 --max-time 20     -H "${NODE_AUTH}" -H 'Content-Type: application/json'     -d "${ANNOUNCE_JSON}"     "${CONTROL_URL}/api/v1/nodes/${NODE_ID}/announce" >/dev/null
 fi
 
-cat >"${ENV_FILE}.new" <<EOF
-CONTROL_URL=${CONTROL_URL}
-NODE_ID=${NODE_ID}
-NODE_TOKEN=${NODE_TOKEN}
-NODE_NAME=${NODE_NAME}
-NODE_GEO=${NODE_GEO}
-NODE_HOST=${NODE_HOST}
-NODE_PORT=${NODE_PORT}
-REALITY_SNI=${REALITY_SNI}
-REALITY_PRIVATE_KEY=${REALITY_PRIVATE_KEY}
-REALITY_PUBLIC_KEY=${REALITY_PUBLIC_KEY}
-REALITY_SHORT_ID=${REALITY_SHORT_ID}
-EOF
+{
+  printf 'CONTROL_URL=%q\n' "${CONTROL_URL}"
+  printf 'NODE_ID=%q\n' "${NODE_ID}"
+  printf 'NODE_TOKEN=%q\n' "${NODE_TOKEN}"
+  printf 'NODE_NAME=%q\n' "${NODE_NAME}"
+  printf 'NODE_GEO=%q\n' "${NODE_GEO}"
+  printf 'NODE_HOST=%q\n' "${NODE_HOST}"
+  printf 'NODE_PORT=%q\n' "${NODE_PORT}"
+  printf 'REALITY_SNI=%q\n' "${REALITY_SNI}"
+  printf 'REALITY_PRIVATE_KEY=%q\n' "${REALITY_PRIVATE_KEY}"
+  printf 'REALITY_PUBLIC_KEY=%q\n' "${REALITY_PUBLIC_KEY}"
+  printf 'REALITY_SHORT_ID=%q\n' "${REALITY_SHORT_ID}"
+} >"${ENV_FILE}.new"
 chown root:root "${ENV_FILE}.new"
 chmod 0600 "${ENV_FILE}.new"
 mv "${ENV_FILE}.new" "${ENV_FILE}"

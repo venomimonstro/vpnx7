@@ -2,90 +2,102 @@
 
 Lightweight self-hosted VPN control plane and geo-node system **without Marzban**.
 
-The project is intentionally designed for weak VPS instances and for failure containment: the main server manages access and subscriptions, while VPN traffic goes directly through independent geo nodes.
+VPNX7 is deliberately small and designed for weak VPS instances. The control plane manages access and subscriptions; user VPN traffic goes directly through independent Xray nodes.
 
-## Current architecture
+## Stable core
 
 - **Control plane:** FastAPI + SQLite WAL + one Uvicorn worker + systemd.
-- **VPN nodes:** pinned Xray-core + systemd + a one-shot shell sync timer.
+- **VPN nodes:** pinned Xray-core + systemd + one-shot desired-state sync.
 - **Protocol:** VLESS + XTLS Vision + REALITY over TCP/443.
-- **Client:** INCY subscription URL; one subscription contains all active geo nodes.
-- **Telegram:** optional lightweight bot for status/access delivery.
-- **No Redis, no Kubernetes, no Marzban, no mandatory Docker.**
+- **Client:** INCY-compatible plain-text subscription containing every healthy geo node.
+- **Telegram:** optional polling bot for access/status delivery.
+- **No Redis, Kubernetes, Marzban or mandatory Docker.**
+- **Release safety:** staged control update + compile + shell validation + migration/API self-tests + health check + automatic rollback.
+- **Node safety:** pinned Xray v26.10.21 + SHA-256 verification + config validation + runtime validation + config/binary rollback.
+- **Data safety:** SQLite online backups with integrity check, daily timer and restore rollback.
+- **Health safety:** a node is included in subscriptions only after a recent successful sync/runtime report.
 
-Xray is pinned to **v26.10.21** in the node installer.
+The control plane is not in the VPN data path. If it is temporarily unavailable, nodes continue serving their last validated Xray configuration.
 
-## Why this shape
+## Ports
 
-The control plane is not in the VPN data path. If the main server is temporarily unavailable, already configured nodes continue serving the last valid client list.
+For the first private two-server test:
 
-A node never blindly overwrites its live Xray configuration. It:
+- control plane: TCP/8080;
+- every VPN node: TCP/443.
 
-1. pulls desired clients;
-2. builds a temporary config;
-3. validates it with `xray run -test`;
-4. replaces the live config only after validation;
-5. restarts only when the generated config actually changed.
+The main VPS can run both the control plane on 8080 and the first Xray node on 443. The second VPS can be the second geo node.
 
-## 1. Install the control plane
+## 1. Install or safely update the control plane
 
-On the main Debian/Ubuntu server:
+On Debian/Ubuntu:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/venomimonstro/vpnx7/main/scripts/install-control.sh -o /tmp/vpnx7-control.sh
 sudo bash /tmp/vpnx7-control.sh http://MAIN_SERVER_IP:8080
 ```
 
-For the **first private test**, HTTP is allowed so the tunnel can be proven before spending time on domains/TLS. Before public sales, use an HTTPS public URL.
+The same command is also the safe update path. Before switching code it:
 
-The installer prints:
+1. creates a clean staged checkout;
+2. installs pinned Python dependencies;
+3. compiles Python;
+4. checks every shell script;
+5. runs legacy-schema migration and control API self-tests;
+6. creates a pre-deploy database backup;
+7. switches the release;
+8. checks live health;
+9. automatically restores the previous release if health fails.
 
-- Admin URL
-- Admin token
-- Node bootstrap token
+On first install it prints the admin token and node bootstrap token. Keep both private.
 
-Keep both tokens private.
+### HTTP safety
 
-## Ports for the first test
+Plain HTTP is allowed only for the initial private tunnel test. It exposes bearer credentials to anyone able to intercept that network path.
 
-- Control plane: TCP/8080.
-- Each VPN node: TCP/443.
+Before any public/commercial use, the public control/subscription endpoint must use trusted HTTPS.
 
-The main server can also be a VPN node during the private-test stage: control remains on 8080 and Xray uses 443. This lets two physical VPS instances provide two VPN geographies immediately. Later, when HTTPS is enabled for the control plane, keep the subscription/admin HTTPS endpoint on a separate port/domain path so TCP/443 remains dedicated to REALITY.
+## 2. Install the first node
 
-## 2. Install the first VPN node
-
-
-On the geo server:
+For an HTTP-only private test, the insecure choice must be explicit:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/venomimonstro/vpnx7/main/scripts/install-node.sh -o /tmp/vpnx7-node.sh
 
 sudo env \
   CONTROL_URL=http://MAIN_SERVER_IP:8080 \
+  VPNX7_ALLOW_HTTP=1 \
   BOOTSTRAP_TOKEN='TOKEN_FROM_CONTROL_INSTALLER' \
   NODE_NAME='de-1' \
   NODE_GEO='Germany' \
   bash /tmp/vpnx7-node.sh
 ```
 
-You may run this on the **main server itself** as the first VPN node, then run it again on the additional VPS with another geo/name.
+With an HTTPS control URL, omit `VPNX7_ALLOW_HTTP=1`.
 
-The node automatically:
+The installer:
 
-- installs the pinned Xray build;
-- generates its REALITY key pair and short ID;
-- detects its public IP;
-- registers itself in the control plane;
-- receives a per-node token;
-- creates systemd services/timer;
-- pulls clients every minute;
-- validates config before switching;
-- starts Xray on TCP/443.
+- downloads exactly Xray **v26.10.21**;
+- verifies the release SHA-256 before installing;
+- checks that TCP/443 is not owned by another service;
+- tests the REALITY target;
+- generates REALITY identity only on first enrollment;
+- detects the public node IPv4 or fails instead of silently publishing a private address;
+- registers the node and stores an individual node token;
+- generates and validates the Xray config before use;
+- starts systemd services/timer;
+- verifies service state, config and listening port;
+- reports healthy state to the control plane.
 
-If TCP/443 is already occupied, the installer **refuses to destroy or replace** the existing service.
+### Safe reinstall/update of a node
 
-## 3. Create your own VPN access
+Run the same installer again with the same `CONTROL_URL`.
+
+An enrolled node **does not regenerate its REALITY identity or silently rotate its token**. It verifies the stored credentials first. A control-plane migration or node rename is refused instead of guessed.
+
+If a new generated config fails after Xray restart, the previous config is restored. If the candidate Xray binary causes the sync to fail, the previous binary is restored.
+
+## 3. Create access and connect through INCY
 
 Open:
 
@@ -93,61 +105,87 @@ Open:
 http://MAIN_SERVER_IP:8080/admin
 ```
 
-Enter the admin token, create a client, and open the returned `connect_url`.
+Enter the admin token and create a client. Open the returned `connect_url`.
 
-The connection page provides an **Add to INCY** button plus the raw subscription URL.
+The page contains an **Add to INCY** deep link and the raw subscription URL. One subscription carries all currently healthy geo nodes; adding another geo does not require issuing another user UUID.
 
-INCY receives every active geo node from the same subscription, so adding a second country does not require issuing a new client key.
+## 4. Add the second node
 
-## 4. Add the second geo node
-
-Run the same node installer on the second VPS with another name and geography, for example:
+Run the same node installer on the second VPS with a unique node name/geography:
 
 ```bash
 sudo env \
   CONTROL_URL=http://MAIN_SERVER_IP:8080 \
+  VPNX7_ALLOW_HTTP=1 \
   BOOTSTRAP_TOKEN='TOKEN_FROM_CONTROL_INSTALLER' \
   NODE_NAME='nl-1' \
   NODE_GEO='Netherlands' \
   bash /tmp/vpnx7-node.sh
 ```
 
-After the next subscription refresh, both locations are available in INCY.
+Update the control plane **before** updating already enrolled nodes.
 
 ## Diagnostics
 
-Run on either control server or node:
+On the control server:
 
 ```bash
 sudo bash /opt/vpnx7/scripts/diagnose.sh
 ```
 
-For a node installed directly from the remote script, download diagnostics when needed:
+On a standalone node:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/venomimonstro/vpnx7/main/scripts/diagnose.sh -o /tmp/vpnx7-diagnose.sh
 sudo bash /tmp/vpnx7-diagnose.sh
 ```
 
+Diagnostics check the control service, local health endpoint, backup timer/recency, Xray service, node sync result, Xray config, listening port, node authentication, disk usage and basic resources.
+
+## Backups and restore
+
+Consistent SQLite backups run daily and are stored under:
+
+```
+/var/backups/vpnx7/
+```
+
+A backup is also required immediately before a control release switch.
+
+Restore:
+
+```bash
+sudo bash /opt/vpnx7/scripts/restore-db.sh /var/backups/vpnx7/vpnx7-YYYYMMDDTHHMMSSZ.sqlite3.gz
+```
+
+The restore verifies SQLite integrity first. If the restored database does not pass the application health check, VPNX7 automatically restores the pre-restore database.
+
 ## Telegram bot
 
-Set `VPNX7_TELEGRAM_BOT_TOKEN` in `/etc/vpnx7/control.env`, then:
+Set `VPNX7_TELEGRAM_BOT_TOKEN` in `/etc/vpnx7/control.env`, then rerun the control installer or enable the unit:
 
 ```bash
 sudo systemctl enable --now vpnx7-bot
 ```
 
-A client linked to a Telegram ID can use `/status` and `/access`.
+A client linked to the real Telegram user ID can use `/status` and `/access`.
 
-## Current web purchase flow
+## CI safety gate
 
-The public site can create a pending order. Activation is currently manual by design: payment integration is intentionally postponed until the VPN tunnel itself passes real two-server testing. This avoids debugging payment logic and VPN transport at the same time.
+Every push to `main` runs on a clean Ubuntu runner:
 
-## Next stages
+- pinned dependency installation;
+- Python compilation;
+- `bash -n`;
+- ShellCheck;
+- migration from the legacy database schema;
+- FastAPI/API lifecycle self-test;
+- real pinned-Xray node runtime/config self-test.
 
-See:
+A red CI run is treated as a release blocker.
 
-- `docs/ARCHITECTURE.md`
-- `docs/SPRINTS.md`
+## Commercial boundary
 
-The next mandatory stage after the first successful tunnel is HTTPS + backup/restore + health monitoring, then the second node, and only then automated payments/commercial UI.
+The current public web form creates a pending access request; **automatic payment is intentionally not presented as working**. Real payments, fiscal/legal requirements and trusted HTTPS are a separate commercial layer and must not be mixed into the first VPN transport acceptance test.
+
+The first production-quality acceptance gate for the VPN core is documented in `docs/AUDIT.md`.

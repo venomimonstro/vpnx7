@@ -183,7 +183,8 @@ User=vpnx7
 Group=vpnx7
 WorkingDirectory=${INSTALL_DIR}
 EnvironmentFile=${ENV_FILE}
-ExecStart=${INSTALL_DIR}/.venv/bin/python -m uvicorn app.main:app --host \${VPNX7_BIND} --port \${VPNX7_PORT} --workers 1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=${INSTALL_DIR}/.venv/bin/python -m uvicorn app.main:app --host \${VPNX7_BIND} --port \${VPNX7_PORT} --workers 1 --no-access-log
 Restart=always
 RestartSec=2
 TimeoutStopSec=15

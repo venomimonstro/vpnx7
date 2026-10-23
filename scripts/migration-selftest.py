@@ -34,12 +34,12 @@ order_columns = {row[1] for row in conn.execute("PRAGMA table_info(orders)")}
 version = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
 conn.close()
 
-required_node = {"last_sync_ok", "last_error", "xray_version"}
+required_node = {"last_sync_ok", "last_error", "xray_version", "disabled_at"}
 if not required_node <= node_columns:
     raise SystemExit(f"missing migrated node columns: {required_node - node_columns}")
 if "request_ip" not in order_columns:
     raise SystemExit("missing migrated order column: request_ip")
-if not version or version[0] != "2":
+if not version or version[0] != "3":
     raise SystemExit(f"unexpected schema version: {version}")
 
 print("VPNX7 MIGRATION SELFTEST PASS")

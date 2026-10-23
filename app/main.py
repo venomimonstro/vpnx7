@@ -363,15 +363,20 @@ def node_desired(node_id: str, authorization: str | None = Header(default=None))
             "UPDATE nodes SET last_seen = ? WHERE id = ?",
             (now, node_id),
         )
-        clients = conn.execute(
-            """
-            SELECT id, name, uuid, expires_at
-            FROM clients
-            WHERE enabled = 1 AND expires_at > ?
-            ORDER BY created_at ASC
-            """,
-            (now,),
-        ).fetchall()
+        if node["enabled"]:
+            clients = conn.execute(
+                """
+                SELECT id, name, uuid, expires_at
+                FROM clients
+                WHERE enabled = 1 AND expires_at > ?
+                ORDER BY created_at ASC
+                """,
+                (now,),
+            ).fetchall()
+        else:
+            # A disabled node remains authenticated so it can drain safely.
+            # Empty desired clients removes every credential from its Xray config.
+            clients = []
 
     return {
         "node": {
@@ -574,8 +579,16 @@ def admin_toggle_node(node_id: str, authorization: str | None = Header(default=N
         if not row:
             raise HTTPException(status_code=404, detail="node not found")
         enabled = 0 if row["enabled"] else 1
-        conn.execute("UPDATE nodes SET enabled=? WHERE id=?", (enabled, node_id))
-    return {"id": node_id, "enabled": bool(enabled)}
+        disabled_at = utcnow_iso() if not enabled else None
+        conn.execute(
+            "UPDATE nodes SET enabled=?, disabled_at=? WHERE id=?",
+            (enabled, disabled_at, node_id),
+        )
+    return {
+        "id": node_id,
+        "enabled": bool(enabled),
+        "state": "active" if enabled else "draining",
+    }
 
 
 @app.get("/api/admin/clients")

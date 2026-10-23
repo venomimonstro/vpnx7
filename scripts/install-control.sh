@@ -9,12 +9,83 @@ FAILED_DIR="${INSTALL_DIR}.failed.$$"
 ENV_DIR="/etc/vpnx7"
 ENV_FILE="${ENV_DIR}/control.env"
 DATA_DIR="/var/lib/vpnx7"
+BACKUP_DIR="/var/backups/vpnx7"
 PUBLIC_URL="${1:-${VPNX7_PUBLIC_URL:-}}"
+UNIT_STAGE_DIR="$(mktemp -d)"
+UNIT_BACKUP_DIR="$(mktemp -d)"
+SYSTEMD_DIR="/etc/systemd/system"
+
+UNITS=(
+  vpnx7-control.service
+  vpnx7-bot.service
+  vpnx7-backup.service
+  vpnx7-backup.timer
+)
 
 cleanup() {
   [ ! -d "${STAGE_DIR}" ] || rm -rf "${STAGE_DIR}"
+  rm -rf "${UNIT_STAGE_DIR}" "${UNIT_BACKUP_DIR}"
 }
 trap cleanup EXIT
+
+restore_units() {
+  local unit
+  for unit in "${UNITS[@]}"; do
+    if [ -f "${UNIT_BACKUP_DIR}/${unit}.missing" ]; then
+      rm -f "${SYSTEMD_DIR}/${unit}"
+    elif [ -f "${UNIT_BACKUP_DIR}/${unit}" ]; then
+      install -m 0644 "${UNIT_BACKUP_DIR}/${unit}" "${SYSTEMD_DIR}/${unit}"
+    fi
+  done
+  systemctl daemon-reload
+}
+
+backup_units() {
+  local unit
+  for unit in "${UNITS[@]}"; do
+    if [ -f "${SYSTEMD_DIR}/${unit}" ]; then
+      cp -a "${SYSTEMD_DIR}/${unit}" "${UNIT_BACKUP_DIR}/${unit}"
+    else
+      : >"${UNIT_BACKUP_DIR}/${unit}.missing"
+    fi
+  done
+}
+
+install_staged_units() {
+  local unit
+  for unit in "${UNITS[@]}"; do
+    install -m 0644 "${UNIT_STAGE_DIR}/${unit}" "${SYSTEMD_DIR}/${unit}"
+  done
+  systemctl daemon-reload
+}
+
+rollback_release() {
+  echo "Rolling back control-plane code and systemd units." >&2
+  systemctl stop vpnx7-bot.service >/dev/null 2>&1 || true
+  systemctl stop vpnx7-control.service >/dev/null 2>&1 || true
+
+  rm -rf "${FAILED_DIR}"
+  if [ -d "${INSTALL_DIR}" ]; then
+    mv "${INSTALL_DIR}" "${FAILED_DIR}"
+  fi
+
+  if [ "${HAD_OLD:-0}" -eq 1 ] && [ -d "${ROLLBACK_DIR}" ]; then
+    mv "${ROLLBACK_DIR}" "${INSTALL_DIR}"
+  fi
+
+  restore_units
+
+  if [ "${HAD_OLD:-0}" -eq 1 ] && [ -d "${INSTALL_DIR}" ]; then
+    systemctl restart vpnx7-control.service || true
+    if [ "${BOT_WAS_ACTIVE_BEFORE:-0}" -eq 1 ]; then
+      systemctl restart vpnx7-bot.service || true
+    fi
+  else
+    systemctl disable vpnx7-control.service vpnx7-bot.service vpnx7-backup.timer >/dev/null 2>&1 || true
+  fi
+
+  echo "Failed release preserved at ${FAILED_DIR}" >&2
+}
 
 if [ "${EUID}" -ne 0 ]; then
   echo "Run as root: sudo bash install-control.sh [PUBLIC_URL]" >&2
@@ -42,6 +113,7 @@ fi
 
 install -d -m 0750 -o root -g vpnx7 "${ENV_DIR}"
 install -d -m 0750 -o vpnx7 -g vpnx7 "${DATA_DIR}"
+install -d -m 0700 "${BACKUP_DIR}"
 
 if [ ! -f "${ENV_FILE}" ]; then
   if [ -z "${PUBLIC_URL}" ]; then
@@ -74,29 +146,30 @@ fi
 
 CONTROL_PORT="$(grep '^VPNX7_PORT=' "${ENV_FILE}" | cut -d= -f2- || true)"
 CONTROL_PORT="${CONTROL_PORT:-8080}"
-install -d -m 0700 /var/backups/vpnx7
 
-echo "[1/7] Building a clean staged release..."
+echo "[1/8] Building a clean staged release..."
 rm -rf "${STAGE_DIR}"
 git clone --depth 1 --branch main "${REPO_URL}" "${STAGE_DIR}"
 
 python3 -m venv "${STAGE_DIR}/.venv"
 "${STAGE_DIR}/.venv/bin/python" -m pip install   --disable-pip-version-check --no-cache-dir   -r "${STAGE_DIR}/requirements.txt"
+"${STAGE_DIR}/.venv/bin/python" -m pip check
 
-echo "[2/7] Static validation..."
-"${STAGE_DIR}/.venv/bin/python" -m compileall -q "${STAGE_DIR}/app" "${STAGE_DIR}/scripts"
+echo "[2/8] Static validation..."
+"${STAGE_DIR}/.venv/bin/python" -m compileall -q   "${STAGE_DIR}/app" "${STAGE_DIR}/scripts"
 for script in "${STAGE_DIR}"/scripts/*.sh; do
   bash -n "${script}"
 done
 
-echo "[3/7] Isolated application and migration self-tests..."
+echo "[3/8] Isolated application and migration self-tests..."
 (
   cd "${STAGE_DIR}"
   "${STAGE_DIR}/.venv/bin/python" scripts/migration-selftest.py
   "${STAGE_DIR}/.venv/bin/python" scripts/selftest.py
 )
 
-cat >/etc/systemd/system/vpnx7-control.service <<EOF
+echo "[4/8] Staging systemd units..."
+cat >"${UNIT_STAGE_DIR}/vpnx7-control.service" <<EOF
 [Unit]
 Description=VPNX7 lightweight control plane
 After=network-online.target
@@ -129,7 +202,7 @@ TasksMax=128
 WantedBy=multi-user.target
 EOF
 
-cat >/etc/systemd/system/vpnx7-bot.service <<EOF
+cat >"${UNIT_STAGE_DIR}/vpnx7-bot.service" <<EOF
 [Unit]
 Description=VPNX7 Telegram bot
 After=network-online.target vpnx7-control.service
@@ -161,8 +234,7 @@ TasksMax=128
 WantedBy=multi-user.target
 EOF
 
-
-cat >/etc/systemd/system/vpnx7-backup.service <<EOF
+cat >"${UNIT_STAGE_DIR}/vpnx7-backup.service" <<EOF
 [Unit]
 Description=VPNX7 consistent SQLite backup
 After=vpnx7-control.service
@@ -170,7 +242,7 @@ After=vpnx7-control.service
 [Service]
 Type=oneshot
 EnvironmentFile=${ENV_FILE}
-Environment=VPNX7_BACKUP_DIR=/var/backups/vpnx7
+Environment=VPNX7_BACKUP_DIR=${BACKUP_DIR}
 Environment=VPNX7_BACKUP_RETENTION=14
 ExecStart=${INSTALL_DIR}/.venv/bin/python ${INSTALL_DIR}/scripts/backup-db.py
 UMask=0077
@@ -178,10 +250,10 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/var/backups/vpnx7
+ReadWritePaths=${BACKUP_DIR}
 EOF
 
-cat >/etc/systemd/system/vpnx7-backup.timer <<EOF
+cat >"${UNIT_STAGE_DIR}/vpnx7-backup.timer" <<EOF
 [Unit]
 Description=Daily VPNX7 database backup
 
@@ -195,18 +267,20 @@ Unit=vpnx7-backup.service
 WantedBy=timers.target
 EOF
 
-echo "[4/7] Creating pre-deploy database backup..."
+echo "[5/8] Creating mandatory pre-deploy database backup..."
 LIVE_DB="$(grep '^VPNX7_DATABASE=' "${ENV_FILE}" | cut -d= -f2- || true)"
 LIVE_DB="${LIVE_DB:-${DATA_DIR}/vpnx7.db}"
 if [ -f "${LIVE_DB}" ]; then
-  VPNX7_DATABASE="${LIVE_DB}" \
-  VPNX7_BACKUP_DIR=/var/backups/vpnx7 \
-  VPNX7_BACKUP_RETENTION=14 \
-    "${STAGE_DIR}/.venv/bin/python" "${STAGE_DIR}/scripts/backup-db.py"
+  VPNX7_DATABASE="${LIVE_DB}"   VPNX7_BACKUP_DIR="${BACKUP_DIR}"   VPNX7_BACKUP_RETENTION=14     "${STAGE_DIR}/.venv/bin/python" "${STAGE_DIR}/scripts/backup-db.py"
 fi
 
-echo "[5/7] Switching release atomically..."
+echo "[6/8] Switching code and unit files..."
 HAD_OLD=0
+BOT_WAS_ACTIVE_BEFORE=0
+systemctl is-active --quiet vpnx7-bot.service && BOT_WAS_ACTIVE_BEFORE=1 || true
+
+backup_units
+
 if [ -d "${INSTALL_DIR}" ]; then
   HAD_OLD=1
   rm -rf "${ROLLBACK_DIR}"
@@ -214,14 +288,21 @@ if [ -d "${INSTALL_DIR}" ]; then
 fi
 mv "${STAGE_DIR}" "${INSTALL_DIR}"
 
-systemctl daemon-reload
+install_staged_units
+
+if command -v systemd-analyze >/dev/null 2>&1; then
+  if ! systemd-analyze verify     "${SYSTEMD_DIR}/vpnx7-control.service"     "${SYSTEMD_DIR}/vpnx7-bot.service"     "${SYSTEMD_DIR}/vpnx7-backup.service"     "${SYSTEMD_DIR}/vpnx7-backup.timer"; then
+    echo "New systemd units failed verification." >&2
+    rollback_release
+    exit 9
+  fi
+fi
+
 systemctl enable vpnx7-control.service >/dev/null
 
-echo "[6/7] Restarting and checking health..."
-if ! systemctl restart vpnx7-control.service; then
-  HEALTH_OK=0
-else
-  HEALTH_OK=0
+echo "[7/8] Restarting and checking live health..."
+HEALTH_OK=0
+if systemctl restart vpnx7-control.service; then
   for _ in $(seq 1 20); do
     if curl -fsS --max-time 2 "http://127.0.0.1:${CONTROL_PORT}/healthz" >/dev/null 2>&1; then
       HEALTH_OK=1
@@ -232,16 +313,8 @@ else
 fi
 
 if [ "${HEALTH_OK}" -ne 1 ]; then
-  echo "New control-plane release failed health validation. Rolling back." >&2
-  systemctl stop vpnx7-control.service >/dev/null 2>&1 || true
-  rm -rf "${FAILED_DIR}"
-  mv "${INSTALL_DIR}" "${FAILED_DIR}"
-  if [ "${HAD_OLD}" -eq 1 ] && [ -d "${ROLLBACK_DIR}" ]; then
-    mv "${ROLLBACK_DIR}" "${INSTALL_DIR}"
-    systemctl daemon-reload
-    systemctl restart vpnx7-control.service || true
-  fi
-  echo "Failed release preserved at ${FAILED_DIR}" >&2
+  echo "New control-plane release failed live health validation." >&2
+  rollback_release
   exit 10
 fi
 
@@ -257,10 +330,11 @@ systemctl enable --now vpnx7-backup.timer >/dev/null
 systemctl start vpnx7-backup.service
 systemctl is-active --quiet vpnx7-backup.timer
 
-echo "[7/7] Final verification..."
+echo "[8/8] Final verification..."
 curl -fsS --max-time 3 "http://127.0.0.1:${CONTROL_PORT}/healthz"
 echo
 systemctl is-active --quiet vpnx7-control.service
+systemctl is-active --quiet vpnx7-backup.timer
 
 echo
 echo "VPNX7 control plane is healthy."

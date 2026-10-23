@@ -1,82 +1,96 @@
 # VPNX7 architecture
 
-## Reliability first
+## Reliability model
 
-VPNX7 deliberately separates the **control plane** from the **data plane**.
+VPNX7 separates the **control plane** from the **data plane**.
+
+The control plane may be unavailable without terminating already configured VPN traffic. Each node keeps its last validated Xray configuration and never needs the control server in the packet path.
 
 ### Control plane
 
 One small FastAPI process on the main server:
 
-- SQLite with WAL mode.
-- Admin API and minimal web UI.
-- Customer/order records.
-- Subscription endpoint.
-- Node registration and desired-state API.
-- Optional Telegram bot as a separate process.
+- SQLite in WAL mode with `synchronous=FULL`;
+- one Uvicorn worker;
+- admin/API/web subscription endpoints;
+- node desired-state API;
+- recent node-health state;
+- optional Telegram bot as a separate process;
+- online SQLite backups.
 
-The control plane is not in the user's VPN traffic path. If it reboots, existing Xray tunnels on the nodes keep working with the last valid configuration.
+Important writes use immediate SQLite transactions. Application updates are prepared in a staged directory and are switched only after compile/syntax/self-tests. A failed live health check automatically restores the previous application release.
 
 ### VPN node
 
-Each geo server runs only:
+Each geo server runs:
 
-1. a pinned Xray-core binary;
-2. one systemd Xray service;
-3. one shell sync job triggered by a systemd timer.
+1. pinned Xray-core;
+2. one hardened systemd Xray service;
+3. one root one-shot sync service;
+4. one systemd timer.
 
-There is no permanent Python agent on a node. The sync job pulls the active UUID list from the control plane, builds a new Xray config, validates it with `xray run -test`, and only then atomically replaces the live config.
+The node has no long-running Python agent.
 
-A failed control-plane request or invalid config does **not** overwrite the last working configuration.
+On each sync the node:
+
+1. authenticates with its individual token;
+2. pulls active UUIDs;
+3. builds a temporary Xray config;
+4. validates it with real Xray;
+5. keeps a copy of the previous config;
+6. restarts Xray only when the config changed;
+7. checks that Xray remains active and TCP port is listening;
+8. restores the previous config if runtime validation fails;
+9. reports success/failure to the control plane.
+
+A node enters client subscriptions only when its last successful report is recent.
 
 ## Protocol
 
-Milestone 1 uses:
+The intentionally narrow initial protocol set is:
 
-- VLESS
-- XTLS Vision
-- REALITY
-- TCP/443
+- VLESS;
+- XTLS Vision;
+- REALITY;
+- TCP/443.
 
-This gives a small number of moving pieces, no certificate lifecycle on VPN nodes, and direct compatibility with INCY subscription links.
+The node installer validates the configured REALITY target and pins Xray to a known release plus SHA-256.
 
-## Secrets
+Adding more protocols is not considered a stability improvement by itself. A fallback is introduced only when real network measurements show that the primary path is insufficient.
 
-- Admin token exists only on the control plane and administrator device.
-- Global node bootstrap token is used only during node installation.
-- After registration, each node receives its own random token; only its SHA-256 hash is stored centrally.
-- REALITY private keys stay on the node.
-- The control plane stores only each node's REALITY public key.
+## Identity and secrets
 
-## Subscription lifecycle
+- Admin token: control plane + administrator only.
+- Bootstrap token: used only to enroll a new node.
+- Per-node token: generated after enrollment; only its SHA-256 hash is stored centrally.
+- REALITY private key: node only.
+- REALITY public key/short ID: control plane.
+- Client subscription token: opaque random token separate from VLESS UUID.
 
-A client has one UUID and one opaque subscription token.
+Reinstalling an enrolled node reuses its identity. Duplicate node names are refused instead of silently replacing an existing enrollment.
 
-The subscription endpoint emits one VLESS link per active node. Therefore:
-
-- adding a new geo does not require issuing new customer credentials;
-- disabling a node removes it from the next subscription refresh;
-- disabling or expiring a client removes its UUID from all node configs on the next sync.
-
-## Failure model
+## Failure behavior
 
 | Failure | Expected behavior |
 | --- | --- |
-| Control plane down | Existing VPN sessions continue; nodes retain last valid config |
-| Node cannot sync | Existing config remains untouched |
-| Invalid desired config | Xray validation fails; live config remains untouched |
-| One node down | Other geo nodes remain in the subscription |
-| Main database locked briefly | SQLite busy timeout + WAL reduce write contention |
-| Installer rerun | Control installer is idempotent; node registration rotates only that node token |
+| Control plane temporarily unavailable | Existing Xray tunnels continue using the last valid node config |
+| Node cannot pull desired state | Live Xray config is not overwritten |
+| Desired state produces invalid Xray config | Validation fails before replacement |
+| Xray fails after a changed config is installed | Previous config is restored and Xray is restarted |
+| Candidate Xray binary breaks the node update | Previous binary is restored |
+| Node stops successful sync reports | Node ages out of newly refreshed subscriptions |
+| One geo node fails | Other healthy geo nodes remain in the subscription |
+| Duplicate node enrollment | HTTP 409; existing node identity is untouched |
+| SQLite write contention | WAL + busy timeout + serialized critical writes |
+| Control release fails self-test | Working release is never switched |
+| Control release fails live health | Previous release is restored |
+| Database restore fails live health | Pre-restore database is restored |
+| Corrupt Xray download | SHA-256 validation aborts before installation |
 
-## Commercial hardening after tunnel proof
+## Resource strategy
 
-Before public sales:
+The design intentionally avoids Redis, containers, message brokers and multi-process application servers. This reduces RAM, disk and operational dependencies on small VPS instances.
 
-- HTTPS for the control plane/subscription domain.
-- Payment provider + webhook idempotency.
-- Rate limiting on public order endpoints.
-- Backups of the SQLite database.
-- Node health probes from more than one network.
-- Abuse controls and traffic quotas if required.
-- Optional second protocol only after the primary path is proven.
+## Commercial boundary
+
+The VPN core can be validated independently of billing. Before public sales, the control/subscription endpoint needs trusted HTTPS and the payment/fiscal flow needs its own idempotent implementation and testing. Those concerns are not allowed to weaken or complicate the VPN data plane.

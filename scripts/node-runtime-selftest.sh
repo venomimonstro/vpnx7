@@ -102,7 +102,7 @@ EOF
 
 chmod 0755 "${TMP}/fakebin/"*
 
-PATH="${TMP}/fakebin:${PATH}" bash "${TMP}/node-sync.sh"
+PATH="${TMP}/fakebin:${PATH}" bash -x "${TMP}/node-sync.sh"
 
 /usr/local/bin/xray run -test -config /etc/xray/config.json >/dev/null
 jq -e '

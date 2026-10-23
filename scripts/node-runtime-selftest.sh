@@ -89,6 +89,9 @@ for arg in "$@"; do
       printf '{"status":"ok"}\n'
       exit 0
       ;;
+    https://www.microsoft.com/|https://www.microsoft.com)
+      exit 0
+      ;;
   esac
 done
 exit 1

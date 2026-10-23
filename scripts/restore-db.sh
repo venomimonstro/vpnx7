@@ -19,6 +19,10 @@ if [ ! -f "${ENV_FILE}" ]; then
   echo "Missing ${ENV_FILE}" >&2
   exit 3
 fi
+if [ ! -x "${RUNTIME_PYTHON}" ] || [ ! -f "${BACKUP_SCRIPT}" ]; then
+  echo "VPNX7 runtime is incomplete under ${ROOT}." >&2
+  exit 3
+fi
 
 DB="$(grep '^VPNX7_DATABASE=' "${ENV_FILE}" | cut -d= -f2- || true)"
 DB="${DB:-${DATA_DIR}/vpnx7.db}"

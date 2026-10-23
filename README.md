@@ -46,7 +46,15 @@ The installer prints:
 
 Keep both tokens private.
 
+## Ports for the first test
+
+- Control plane: TCP/8080.
+- Each VPN node: TCP/443.
+
+The main server can also be a VPN node during the private-test stage: control remains on 8080 and Xray uses 443. This lets two physical VPS instances provide two VPN geographies immediately. Later, when HTTPS is enabled for the control plane, keep the subscription/admin HTTPS endpoint on a separate port/domain path so TCP/443 remains dedicated to REALITY.
+
 ## 2. Install the first VPN node
+
 
 On the geo server:
 
@@ -60,6 +68,8 @@ sudo env \
   NODE_GEO='Germany' \
   bash /tmp/vpnx7-node.sh
 ```
+
+You may run this on the **main server itself** as the first VPN node, then run it again on the additional VPS with another geo/name.
 
 The node automatically:
 

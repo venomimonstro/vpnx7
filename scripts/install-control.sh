@@ -189,6 +189,7 @@ echo "[3/8] Isolated application and migration self-tests..."
   cd "${STAGE_DIR}"
   "${STAGE_DIR}/.venv/bin/python" scripts/migration-selftest.py
   "${STAGE_DIR}/.venv/bin/python" scripts/selftest.py
+  "${STAGE_DIR}/.venv/bin/python" scripts/backup-selftest.py
 )
 
 echo "[4/8] Staging systemd units..."

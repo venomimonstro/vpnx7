@@ -284,28 +284,41 @@ jq -n   --argjson port "$NODE_PORT"   --arg sni "$REALITY_SNI"   --arg privateKe
 /usr/local/bin/xray run -test -config "$CFG" >/dev/null
 
 CHANGED=0
+HAD_PREVIOUS=0
 if [ ! -f /etc/xray/config.json ] || ! cmp -s "$CFG" /etc/xray/config.json; then
   CHANGED=1
   if [ -f /etc/xray/config.json ]; then
+    HAD_PREVIOUS=1
     cp -a /etc/xray/config.json "$BACKUP"
   fi
   install -o root -g vpnx7-node -m 0640 "$CFG" /etc/xray/config.json
+fi
 
-  if ! systemctl restart vpnx7-xray.service; then
-    if [ -s "$BACKUP" ]; then
+restart_and_verify() {
+  systemctl restart vpnx7-xray.service
+  sleep 2
+  systemctl is-active --quiet vpnx7-xray.service
+  /usr/local/bin/xray run -test -config /etc/xray/config.json >/dev/null
+  ss -ltnH "sport = :$NODE_PORT" | grep -q .
+}
+
+if [ "$CHANGED" -eq 1 ]; then
+  if ! restart_and_verify; then
+    if [ "$HAD_PREVIOUS" -eq 1 ] && [ -s "$BACKUP" ]; then
+      echo "New Xray config failed runtime validation; restoring previous config." >&2
       install -o root -g vpnx7-node -m 0640 "$BACKUP" /etc/xray/config.json
-      systemctl restart vpnx7-xray.service || true
+      if ! restart_and_verify; then
+        echo "Previous Xray config also failed after rollback." >&2
+      fi
     fi
     false
   fi
 elif ! systemctl is-active --quiet vpnx7-xray.service; then
-  systemctl restart vpnx7-xray.service
+  restart_and_verify
+else
+  /usr/local/bin/xray run -test -config /etc/xray/config.json >/dev/null
+  ss -ltnH "sport = :$NODE_PORT" | grep -q .
 fi
-
-sleep 1
-systemctl is-active --quiet vpnx7-xray.service
-/usr/local/bin/xray run -test -config /etc/xray/config.json >/dev/null
-ss -ltnH "sport = :$NODE_PORT" | grep -q .
 
 XVER="$(/usr/local/bin/xray version | head -n1)"
 curl -fsS --connect-timeout 5 --max-time 10   -H "Authorization: Bearer $NODE_TOKEN"   -H 'Content-Type: application/json'   -d "$(jq -n --arg v "$XVER" '{ok:true,xray_version:$v}')"   "$CONTROL_URL/api/v1/nodes/$NODE_ID/report" >/dev/null

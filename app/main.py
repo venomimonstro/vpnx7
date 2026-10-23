@@ -2,12 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import html
-import json
 import uuid
 from urllib.parse import quote, urlencode
 
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 from pydantic import BaseModel, Field
 
 from app.db import db, init_db, utcnow_iso
@@ -15,20 +14,45 @@ from app.security import random_token, secure_equal, token_hash
 from app.settings import settings
 
 
-app = FastAPI(title="VPNX7", version="0.1.0")
+NODE_FRESH_SECONDS = 180
+ORDER_RATE_WINDOW_SECONDS = 600
+ORDER_RATE_MAX = 10
+VALID_PLANS = {"month": 30}
+
+app = FastAPI(
+    title="VPNX7",
+    version="0.2.0",
+    docs_url=None,
+    redoc_url=None,
+)
 
 
 @app.on_event("startup")
 def startup() -> None:
     init_db()
-    if not settings.admin_token:
-        raise RuntimeError("VPNX7_ADMIN_TOKEN is required")
-    if not settings.node_bootstrap_token:
-        raise RuntimeError("VPNX7_NODE_BOOTSTRAP_TOKEN is required")
+    if len(settings.admin_token) < 32:
+        raise RuntimeError("VPNX7_ADMIN_TOKEN must contain at least 32 characters")
+    if len(settings.node_bootstrap_token) < 32:
+        raise RuntimeError("VPNX7_NODE_BOOTSTRAP_TOKEN must contain at least 32 characters")
+
+
+@app.middleware("http")
+async def safety_headers(request: Request, call_next):
+    if request.method in {"POST", "PUT", "PATCH"}:
+        raw_length = request.headers.get("content-length", "")
+        if raw_length.isdigit() and int(raw_length) > 65536:
+            return Response(status_code=413)
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Frame-Options"] = "DENY"
+    if request.url.path.startswith(("/admin", "/connect/", "/sub/")):
+        response.headers["Cache-Control"] = "no-store, private"
+    return response
 
 
 class NodeRegister(BaseModel):
-    bootstrap_token: str
+    bootstrap_token: str = Field(min_length=16, max_length=256)
     name: str = Field(min_length=1, max_length=80)
     geo: str = Field(min_length=2, max_length=80)
     host: str | None = Field(default=None, max_length=255)
@@ -36,6 +60,21 @@ class NodeRegister(BaseModel):
     sni: str = Field(min_length=1, max_length=255)
     public_key: str = Field(min_length=16, max_length=256)
     short_id: str = Field(min_length=2, max_length=32)
+
+
+class NodeAnnounce(BaseModel):
+    geo: str = Field(min_length=2, max_length=80)
+    host: str = Field(min_length=1, max_length=255)
+    port: int = Field(default=443, ge=1, le=65535)
+    sni: str = Field(min_length=1, max_length=255)
+    public_key: str = Field(min_length=16, max_length=256)
+    short_id: str = Field(min_length=2, max_length=32)
+
+
+class NodeReport(BaseModel):
+    ok: bool
+    xray_version: str | None = Field(default=None, max_length=120)
+    error: str | None = Field(default=None, max_length=500)
 
 
 class ClientCreate(BaseModel):
@@ -64,26 +103,57 @@ def require_admin(authorization: str | None) -> None:
 
 def require_node(node_id: str, authorization: str | None) -> None:
     supplied = bearer_token(authorization)
+    if not supplied:
+        raise HTTPException(status_code=401, detail="node authentication failed")
     with db() as conn:
         row = conn.execute(
             "SELECT token_hash, enabled FROM nodes WHERE id = ?",
             (node_id,),
         ).fetchone()
-    if not row or not row["enabled"] or not secure_equal(token_hash(supplied), row["token_hash"]):
+    if not row or not row["enabled"] or not secure_equal(
+        token_hash(supplied), row["token_hash"]
+    ):
         raise HTTPException(status_code=401, detail="node authentication failed")
 
 
+def _parse_expiry(value: str) -> datetime | None:
+    try:
+        expiry = datetime.fromisoformat(value)
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=timezone.utc)
+        return expiry.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
 def is_client_active(row) -> bool:
-    if not row["enabled"]:
+    if not row or not row["enabled"]:
+        return False
+    expiry = _parse_expiry(row["expires_at"])
+    return bool(expiry and expiry > datetime.now(timezone.utc))
+
+
+def fresh_cutoff_iso() -> str:
+    return (
+        datetime.now(timezone.utc) - timedelta(seconds=NODE_FRESH_SECONDS)
+    ).replace(microsecond=0).isoformat()
+
+
+def node_is_healthy(row) -> bool:
+    if not row or not row["enabled"] or not row["last_sync_ok"]:
         return False
     try:
-        expiry = datetime.fromisoformat(row["expires_at"])
-    except ValueError:
+        last_ok = datetime.fromisoformat(row["last_sync_ok"])
+        if last_ok.tzinfo is None:
+            last_ok = last_ok.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
         return False
-    return expiry > datetime.now(timezone.utc)
+    return last_ok.astimezone(timezone.utc) >= (
+        datetime.now(timezone.utc) - timedelta(seconds=NODE_FRESH_SECONDS)
+    )
 
 
-def create_client_record(name: str, email: str | None, telegram_id: str | None, days: int) -> dict:
+def _insert_client(conn, name: str, email: str | None, telegram_id: str | None, days: int):
     client_id = str(uuid.uuid4())
     client_uuid = str(uuid.uuid4())
     sub_token = random_token(28)
@@ -91,25 +161,23 @@ def create_client_record(name: str, email: str | None, telegram_id: str | None, 
     expires_at = (
         datetime.now(timezone.utc) + timedelta(days=days)
     ).replace(microsecond=0).isoformat()
-
-    with db() as conn:
-        conn.execute(
-            """
-            INSERT INTO clients
-            (id, name, email, telegram_id, uuid, subscription_token, enabled, expires_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
-            """,
-            (
-                client_id,
-                name,
-                email,
-                telegram_id,
-                client_uuid,
-                sub_token,
-                expires_at,
-                created_at,
-            ),
-        )
+    conn.execute(
+        """
+        INSERT INTO clients
+        (id, name, email, telegram_id, uuid, subscription_token, enabled, expires_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+        """,
+        (
+            client_id,
+            name.strip(),
+            email.strip() if email else None,
+            telegram_id.strip() if telegram_id else None,
+            client_uuid,
+            sub_token,
+            expires_at,
+            created_at,
+        ),
+    )
     return {
         "id": client_id,
         "uuid": client_uuid,
@@ -117,6 +185,33 @@ def create_client_record(name: str, email: str | None, telegram_id: str | None, 
         "expires_at": expires_at,
         "subscription_url": f"{settings.public_url}/sub/{sub_token}",
         "connect_url": f"{settings.public_url}/connect/{sub_token}",
+    }
+
+
+def create_client_record(
+    name: str, email: str | None, telegram_id: str | None, days: int
+) -> dict:
+    with db(immediate=True) as conn:
+        return _insert_client(conn, name, email, telegram_id, days)
+
+
+def client_payload_from_id(conn, client_id: str) -> dict | None:
+    row = conn.execute(
+        """
+        SELECT id, uuid, subscription_token, expires_at
+        FROM clients WHERE id=?
+        """,
+        (client_id,),
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "uuid": row["uuid"],
+        "subscription_token": row["subscription_token"],
+        "expires_at": row["expires_at"],
+        "subscription_url": f'{settings.public_url}/sub/{row["subscription_token"]}',
+        "connect_url": f'{settings.public_url}/connect/{row["subscription_token"]}',
     }
 
 
@@ -143,7 +238,7 @@ def build_vless_link(client, node) -> str:
 def healthz():
     with db() as conn:
         conn.execute("SELECT 1").fetchone()
-    return {"status": "ok", "service": "vpnx7-control"}
+    return {"status": "ok", "service": "vpnx7-control", "version": app.version}
 
 
 @app.post("/api/v1/nodes/register")
@@ -151,68 +246,108 @@ def register_node(payload: NodeRegister, request: Request):
     if not secure_equal(payload.bootstrap_token, settings.node_bootstrap_token):
         raise HTTPException(status_code=401, detail="invalid bootstrap token")
 
-    node_token = random_token(36)
-    node_token_hash = token_hash(node_token)
     host = (payload.host or (request.client.host if request.client else "")).strip()
     if not host:
         raise HTTPException(status_code=400, detail="node host could not be detected")
 
     now = utcnow_iso()
-    with db() as conn:
+    node_id = str(uuid.uuid4())
+    node_token = random_token(36)
+    with db(immediate=True) as conn:
         existing = conn.execute(
             "SELECT id FROM nodes WHERE name = ?",
-            (payload.name,),
+            (payload.name.strip(),),
         ).fetchone()
         if existing:
-            node_id = existing["id"]
-            conn.execute(
-                """
-                UPDATE nodes
-                SET geo=?, host=?, port=?, sni=?, public_key=?, short_id=?,
-                    token_hash=?, enabled=1, last_seen=?
-                WHERE id=?
-                """,
-                (
-                    payload.geo,
-                    host,
-                    payload.port,
-                    payload.sni,
-                    payload.public_key,
-                    payload.short_id,
-                    node_token_hash,
-                    now,
-                    node_id,
-                ),
+            raise HTTPException(
+                status_code=409,
+                detail="node name already registered; rerun the installer on the existing node or delete the stale node in admin first",
             )
-        else:
-            node_id = str(uuid.uuid4())
-            conn.execute(
-                """
-                INSERT INTO nodes
-                (id, name, geo, host, port, sni, public_key, short_id,
-                 token_hash, enabled, created_at, last_seen)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-                """,
-                (
-                    node_id,
-                    payload.name,
-                    payload.geo,
-                    host,
-                    payload.port,
-                    payload.sni,
-                    payload.public_key,
-                    payload.short_id,
-                    node_token_hash,
-                    now,
-                    now,
-                ),
-            )
+        conn.execute(
+            """
+            INSERT INTO nodes
+            (id, name, geo, host, port, sni, public_key, short_id,
+             token_hash, enabled, created_at, last_seen)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+            """,
+            (
+                node_id,
+                payload.name.strip(),
+                payload.geo.strip(),
+                host,
+                payload.port,
+                payload.sni.strip(),
+                payload.public_key.strip(),
+                payload.short_id.strip(),
+                token_hash(node_token),
+                now,
+                now,
+            ),
+        )
 
     return {
         "node_id": node_id,
         "node_token": node_token,
         "sync_url": f"{settings.public_url}/api/v1/nodes/{node_id}/desired",
     }
+
+
+@app.post("/api/v1/nodes/{node_id}/announce")
+def node_announce(
+    node_id: str,
+    payload: NodeAnnounce,
+    authorization: str | None = Header(default=None),
+):
+    require_node(node_id, authorization)
+    with db(immediate=True) as conn:
+        conn.execute(
+            """
+            UPDATE nodes
+            SET geo=?, host=?, port=?, sni=?, public_key=?, short_id=?, last_seen=?
+            WHERE id=?
+            """,
+            (
+                payload.geo.strip(),
+                payload.host.strip(),
+                payload.port,
+                payload.sni.strip(),
+                payload.public_key.strip(),
+                payload.short_id.strip(),
+                utcnow_iso(),
+                node_id,
+            ),
+        )
+    return {"status": "ok", "node_id": node_id}
+
+
+@app.post("/api/v1/nodes/{node_id}/report")
+def node_report(
+    node_id: str,
+    payload: NodeReport,
+    authorization: str | None = Header(default=None),
+):
+    require_node(node_id, authorization)
+    now = utcnow_iso()
+    with db(immediate=True) as conn:
+        if payload.ok:
+            conn.execute(
+                """
+                UPDATE nodes
+                SET last_seen=?, last_sync_ok=?, last_error=NULL, xray_version=?
+                WHERE id=?
+                """,
+                (now, now, payload.xray_version, node_id),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE nodes
+                SET last_seen=?, last_error=?, xray_version=?
+                WHERE id=?
+                """,
+                (now, payload.error or "node reported a failure", payload.xray_version, node_id),
+            )
+    return {"status": "ok"}
 
 
 @app.get("/api/v1/nodes/{node_id}/desired")
@@ -272,18 +407,24 @@ def subscription(subscription_token: str):
         nodes = conn.execute(
             """
             SELECT * FROM nodes
-            WHERE enabled = 1 AND public_key <> ''
+            WHERE enabled = 1
+              AND public_key <> ''
+              AND last_sync_ok IS NOT NULL
+              AND last_sync_ok >= ?
             ORDER BY geo, name
-            """
+            """,
+            (fresh_cutoff_iso(),),
         ).fetchall()
 
     if not nodes:
-        raise HTTPException(status_code=503, detail="no active VPN nodes")
+        raise HTTPException(status_code=503, detail="no healthy VPN nodes")
 
     body = "\n".join(build_vless_link(client, node) for node in nodes)
     headers = {
         "Cache-Control": "no-store, private",
         "profile-title": settings.provider_name,
+        "profile-update-interval": "1",
+        "sort-order": "ping",
     }
     if settings.support_url:
         headers["support-url"] = settings.support_url
@@ -298,7 +439,12 @@ def connect_page(subscription_token: str):
             (subscription_token,),
         ).fetchone()
         nodes = conn.execute(
-            "SELECT geo, name FROM nodes WHERE enabled=1 ORDER BY geo, name"
+            """
+            SELECT geo, name FROM nodes
+            WHERE enabled=1 AND last_sync_ok IS NOT NULL AND last_sync_ok >= ?
+            ORDER BY geo, name
+            """,
+            (fresh_cutoff_iso(),),
         ).fetchall()
 
     if not client or not is_client_active(client):
@@ -308,7 +454,7 @@ def connect_page(subscription_token: str):
     incy_url = f"incy://import/{subscription_url}"
     node_html = "".join(
         f"<li>{html.escape(row['geo'])} — {html.escape(row['name'])}</li>" for row in nodes
-    ) or "<li>Ноды ещё не подключены</li>"
+    ) or "<li>Сейчас нет подтверждённых рабочих нод</li>"
 
     return HTMLResponse(f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -323,30 +469,57 @@ code{{display:block;overflow-wrap:anywhere;background:#0b0d10;padding:12px;borde
 <h1>{html.escape(settings.provider_name)}</h1>
 <div class="card">
 <h2>Подключение через INCY</h2>
-<p>Установите INCY, затем добавьте подписку одной кнопкой. При появлении новых гео повторно получать ключ не нужно.</p>
+<p>Добавьте подписку один раз. Рабочие гео-ноды будут обновляться в ней автоматически.</p>
 <p><a class="btn" href="{html.escape(incy_url)}">Добавить в INCY</a></p>
 <p class="small">Если кнопка не открылась — скопируйте URL подписки вручную:</p>
 <code id="sub">{html.escape(subscription_url)}</code>
 <button onclick="navigator.clipboard.writeText(document.getElementById('sub').innerText)">Скопировать</button>
 </div>
-<div class="card"><h3>Доступные серверы</h3><ul>{node_html}</ul>
+<div class="card"><h3>Рабочие серверы</h3><ul>{node_html}</ul>
 <p class="small">Доступ до {html.escape(client["expires_at"])}</p></div>
 </body></html>""")
 
 
 @app.post("/api/public/orders")
-def create_order(payload: OrderCreate):
-    if not payload.email and not payload.telegram_id:
+def create_order(payload: OrderCreate, request: Request):
+    email = payload.email.strip() if payload.email else None
+    telegram_id = payload.telegram_id.strip() if payload.telegram_id else None
+    if not email and not telegram_id:
         raise HTTPException(status_code=400, detail="email or telegram_id is required")
+    if payload.plan not in VALID_PLANS:
+        raise HTTPException(status_code=400, detail="unknown plan")
+
+    request_ip = request.client.host if request.client else ""
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    window_start = (now - timedelta(seconds=ORDER_RATE_WINDOW_SECONDS)).isoformat()
+
     order_id = str(uuid.uuid4())
-    with db() as conn:
+    with db(immediate=True) as conn:
+        if request_ip:
+            recent = conn.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM orders
+                WHERE request_ip=? AND created_at >= ?
+                """,
+                (request_ip, window_start),
+            ).fetchone()["n"]
+            if recent >= ORDER_RATE_MAX:
+                raise HTTPException(status_code=429, detail="too many requests")
         conn.execute(
             """
             INSERT INTO orders
-            (id, email, telegram_id, plan, status, created_at)
-            VALUES (?, ?, ?, ?, 'pending', ?)
+            (id, email, telegram_id, plan, status, created_at, request_ip)
+            VALUES (?, ?, ?, ?, 'pending', ?, ?)
             """,
-            (order_id, payload.email, payload.telegram_id, payload.plan, utcnow_iso()),
+            (
+                order_id,
+                email,
+                telegram_id,
+                payload.plan,
+                now.isoformat(),
+                request_ip or None,
+            ),
         )
     return {"order_id": order_id, "status": "pending"}
 
@@ -367,7 +540,9 @@ def order_status(order_id: str):
                 (row["activated_client_id"],),
             ).fetchone()
             if client:
-                result["connect_url"] = f'{settings.public_url}/connect/{client["subscription_token"]}'
+                result["connect_url"] = (
+                    f'{settings.public_url}/connect/{client["subscription_token"]}'
+                )
     return result
 
 
@@ -377,11 +552,40 @@ def admin_nodes(authorization: str | None = Header(default=None)):
     with db() as conn:
         rows = conn.execute(
             """
-            SELECT id,name,geo,host,port,sni,enabled,created_at,last_seen
+            SELECT id,name,geo,host,port,sni,enabled,created_at,last_seen,
+                   last_sync_ok,last_error,xray_version
             FROM nodes ORDER BY geo,name
             """
         ).fetchall()
-    return [dict(row) for row in rows]
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["healthy"] = node_is_healthy(row)
+        result.append(item)
+    return result
+
+
+@app.post("/api/admin/nodes/{node_id}/toggle")
+def admin_toggle_node(node_id: str, authorization: str | None = Header(default=None)):
+    require_admin(authorization)
+    with db(immediate=True) as conn:
+        row = conn.execute("SELECT enabled FROM nodes WHERE id=?", (node_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="node not found")
+        enabled = 0 if row["enabled"] else 1
+        conn.execute("UPDATE nodes SET enabled=? WHERE id=?", (enabled, node_id))
+    return {"id": node_id, "enabled": bool(enabled)}
+
+
+@app.delete("/api/admin/nodes/{node_id}")
+def admin_delete_node(node_id: str, authorization: str | None = Header(default=None)):
+    require_admin(authorization)
+    with db(immediate=True) as conn:
+        row = conn.execute("SELECT id FROM nodes WHERE id=?", (node_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="node not found")
+        conn.execute("DELETE FROM nodes WHERE id=?", (node_id,))
+    return {"status": "deleted", "id": node_id}
 
 
 @app.get("/api/admin/clients")
@@ -404,7 +608,10 @@ def admin_clients(authorization: str | None = Header(default=None)):
 
 
 @app.post("/api/admin/clients")
-def admin_create_client(payload: ClientCreate, authorization: str | None = Header(default=None)):
+def admin_create_client(
+    payload: ClientCreate,
+    authorization: str | None = Header(default=None),
+):
     require_admin(authorization)
     return create_client_record(
         payload.name,
@@ -415,9 +622,12 @@ def admin_create_client(payload: ClientCreate, authorization: str | None = Heade
 
 
 @app.post("/api/admin/clients/{client_id}/toggle")
-def admin_toggle_client(client_id: str, authorization: str | None = Header(default=None)):
+def admin_toggle_client(
+    client_id: str,
+    authorization: str | None = Header(default=None),
+):
     require_admin(authorization)
-    with db() as conn:
+    with db(immediate=True) as conn:
         row = conn.execute("SELECT enabled FROM clients WHERE id=?", (client_id,)).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="client not found")
@@ -437,27 +647,46 @@ def admin_orders(authorization: str | None = Header(default=None)):
 
 
 @app.post("/api/admin/orders/{order_id}/activate")
-def admin_activate_order(order_id: str, authorization: str | None = Header(default=None)):
+def admin_activate_order(
+    order_id: str,
+    authorization: str | None = Header(default=None),
+):
     require_admin(authorization)
-    with db() as conn:
+    with db(immediate=True) as conn:
         order = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
-    if not order:
-        raise HTTPException(status_code=404, detail="order not found")
-    if order["status"] == "active" and order["activated_client_id"]:
-        raise HTTPException(status_code=409, detail="order already activated")
+        if not order:
+            raise HTTPException(status_code=404, detail="order not found")
 
-    client = create_client_record(
-        name=order["email"] or f'Telegram {order["telegram_id"]}',
-        email=order["email"],
-        telegram_id=order["telegram_id"],
-        days=30,
-    )
-    with db() as conn:
-        conn.execute(
-            "UPDATE orders SET status='active', activated_client_id=? WHERE id=?",
-            (client["id"], order_id),
+        if order["status"] == "active" and order["activated_client_id"]:
+            existing = client_payload_from_id(conn, order["activated_client_id"])
+            if existing:
+                return existing
+
+        if order["status"] != "pending":
+            raise HTTPException(status_code=409, detail="order is not pending")
+
+        days = VALID_PLANS.get(order["plan"])
+        if not days:
+            raise HTTPException(status_code=409, detail="order plan is invalid")
+
+        client = _insert_client(
+            conn,
+            name=order["email"] or f'Telegram {order["telegram_id"]}',
+            email=order["email"],
+            telegram_id=order["telegram_id"],
+            days=days,
         )
-    return client
+        updated = conn.execute(
+            """
+            UPDATE orders
+            SET status='active', activated_client_id=?
+            WHERE id=? AND status='pending'
+            """,
+            (client["id"], order_id),
+        ).rowcount
+        if updated != 1:
+            raise HTTPException(status_code=409, detail="order activation conflict")
+        return client
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -473,10 +702,10 @@ button{{background:#fff;color:#111;font-weight:700;cursor:pointer}}
 .small{{color:#9eabba}}
 </style></head><body>
 <h1>{html.escape(settings.provider_name)}</h1>
-<p>Лёгкий VPN с выбором географии. Один URL подписки — все доступные серверы.</p>
+<p>VPNX7: один доступ, несколько гео-серверов.</p>
 <div class="card">
 <h2>Запросить доступ</h2>
-<input id="email" type="email" placeholder="Email">
+<input id="email" type="email" maxlength="255" placeholder="Email">
 <select id="plan"><option value="month">1 месяц</option></select>
 <button onclick="send()">Продолжить</button>
 <p id="result" class="small"></p>

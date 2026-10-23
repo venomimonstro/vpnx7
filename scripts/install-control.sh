@@ -25,6 +25,17 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y --no-install-recommends   ca-certificates curl git gzip openssl python3 python3-venv
 
+if ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
+  echo "VPNX7 control plane requires Python >= 3.10." >&2
+  echo "Use Debian 12+ or Ubuntu 22.04+ (or another host with Python >= 3.10)." >&2
+  exit 3
+fi
+
+if ! command -v systemctl >/dev/null 2>&1; then
+  echo "VPNX7 requires systemd/systemctl." >&2
+  exit 3
+fi
+
 if ! id vpnx7 >/dev/null 2>&1; then
   useradd --system --home "${DATA_DIR}" --shell /usr/sbin/nologin vpnx7
 fi

@@ -23,7 +23,7 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y --no-install-recommends   ca-certificates curl git openssl python3 python3-venv
+apt-get install -y --no-install-recommends   ca-certificates curl git gzip openssl python3 python3-venv
 
 if ! id vpnx7 >/dev/null 2>&1; then
   useradd --system --home "${DATA_DIR}" --shell /usr/sbin/nologin vpnx7
@@ -60,6 +60,10 @@ EOF
 else
   echo "Keeping existing ${ENV_FILE}; secrets and public URL were not changed."
 fi
+
+CONTROL_PORT="$(grep '^VPNX7_PORT=' "${ENV_FILE}" | cut -d= -f2- || true)"
+CONTROL_PORT="${CONTROL_PORT:-8080}"
+install -d -m 0700 /var/backups/vpnx7
 
 echo "[1/6] Building a clean staged release..."
 rm -rf "${STAGE_DIR}"
@@ -142,6 +146,40 @@ TasksMax=128
 WantedBy=multi-user.target
 EOF
 
+
+cat >/etc/systemd/system/vpnx7-backup.service <<EOF
+[Unit]
+Description=VPNX7 consistent SQLite backup
+After=vpnx7-control.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=${ENV_FILE}
+Environment=VPNX7_BACKUP_DIR=/var/backups/vpnx7
+Environment=VPNX7_BACKUP_RETENTION=14
+ExecStart=${INSTALL_DIR}/.venv/bin/python ${INSTALL_DIR}/scripts/backup-db.py
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/backups/vpnx7
+EOF
+
+cat >/etc/systemd/system/vpnx7-backup.timer <<EOF
+[Unit]
+Description=Daily VPNX7 database backup
+
+[Timer]
+OnCalendar=*-*-* 03:17:00
+RandomizedDelaySec=20m
+Persistent=true
+Unit=vpnx7-backup.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
 echo "[4/6] Switching release atomically..."
 HAD_OLD=0
 if [ -d "${INSTALL_DIR}" ]; then
@@ -160,7 +198,7 @@ if ! systemctl restart vpnx7-control.service; then
 else
   HEALTH_OK=0
   for _ in $(seq 1 20); do
-    if curl -fsS --max-time 2 http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
+    if curl -fsS --max-time 2 http://127.0.0.1:${CONTROL_PORT}/healthz >/dev/null 2>&1; then
       HEALTH_OK=1
       break
     fi
@@ -190,8 +228,12 @@ else
   systemctl disable --now vpnx7-bot.service >/dev/null 2>&1 || true
 fi
 
+systemctl enable --now vpnx7-backup.timer >/dev/null
+systemctl start vpnx7-backup.service
+systemctl is-active --quiet vpnx7-backup.timer
+
 echo "[6/6] Final verification..."
-curl -fsS --max-time 3 http://127.0.0.1:8080/healthz
+curl -fsS --max-time 3 http://127.0.0.1:${CONTROL_PORT}/healthz
 echo
 systemctl is-active --quiet vpnx7-control.service
 

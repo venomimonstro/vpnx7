@@ -15,21 +15,43 @@ DATA="${TMP}/data"
 BACKUPS="${TMP}/backups"
 FAKEBIN="${TMP}/fakebin"
 ENV_FILE="${TMP}/control.env"
+CURL_STATE="${TMP}/curl-state"
 mkdir -p "${INSTALL}/.venv/bin" "${INSTALL}/scripts" "${DATA}" "${BACKUPS}" "${FAKEBIN}"
 
 ln -s "$(command -v python3)" "${INSTALL}/.venv/bin/python"
 cp "${ROOT}/scripts/backup-db.py" "${INSTALL}/scripts/backup-db.py"
 
-python3 - "${DATA}/vpnx7.db" "${TMP}/replacement.db" <<'PY'
+make_db() {
+  local path="$1"
+  local value="$2"
+  rm -f "${path}"
+  python3 - "${path}" "${value}" <<'PY'
 import sqlite3, sys
-for path, value in [(sys.argv[1], "old"), (sys.argv[2], "new")]:
-    c=sqlite3.connect(path)
-    c.execute("CREATE TABLE proof(value TEXT NOT NULL)")
-    c.execute("INSERT INTO proof(value) VALUES(?)", (value,))
-    c.commit()
-    c.close()
+c=sqlite3.connect(sys.argv[1])
+c.execute("CREATE TABLE proof(value TEXT NOT NULL)")
+c.execute("INSERT INTO proof(value) VALUES(?)", (sys.argv[2],))
+c.commit()
+c.close()
 PY
-gzip -c "${TMP}/replacement.db" >"${TMP}/replacement.sqlite3.gz"
+}
+
+read_proof() {
+  python3 - "$1" <<'PY'
+import sqlite3, sys
+c=sqlite3.connect(sys.argv[1])
+print(c.execute("SELECT value FROM proof").fetchone()[0])
+c.close()
+PY
+}
+
+make_archive() {
+  local value="$1"
+  local raw="${TMP}/replacement-${value}.db"
+  local archive="${TMP}/replacement-${value}.sqlite3.gz"
+  make_db "${raw}" "${value}"
+  gzip -c "${raw}" >"${archive}"
+  printf '%s\n' "${archive}"
+}
 
 cat >"${ENV_FILE}" <<EOF
 VPNX7_DATABASE=${DATA}/vpnx7.db
@@ -40,7 +62,6 @@ cat >"${FAKEBIN}/systemctl" <<'EOF'
 #!/usr/bin/env bash
 case "$1" in
   is-active)
-    # Treat optional bot as inactive; all other explicit status probes as active.
     [ "${2:-}" != "vpnx7-bot.service" ]
     ;;
   stop|start|restart|enable|disable)
@@ -54,74 +75,62 @@ EOF
 
 cat >"${FAKEBIN}/curl" <<'EOF'
 #!/usr/bin/env bash
-case "${VPNX7_SELFTEST_CURL_MODE:-success}" in
+set -u
+case "${VPNX7_FAKE_CURL_MODE:-success}" in
   success)
     exit 0
     ;;
-  fail_then_pass)
-    counter="${VPNX7_SELFTEST_CURL_COUNTER:?}"
+  fail-first)
+    state="${VPNX7_FAKE_CURL_STATE:?}"
     n=0
-    [ ! -f "${counter}" ] || n="$(cat "${counter}")"
+    [ ! -f "${state}" ] || n="$(cat "${state}")"
     n=$((n + 1))
-    printf '%s\n' "${n}" >"${counter}"
-    if [ "${n}" -le "${VPNX7_SELFTEST_FAIL_COUNT:-2}" ]; then
-      exit 22
-    fi
-    exit 0
+    printf '%s\n' "${n}" >"${state}"
+    # With two configured health attempts this rejects the restored DB,
+    # then succeeds on the first rollback-health probe.
+    [ "${n}" -gt 2 ]
+    ;;
+  *)
+    exit 2
     ;;
 esac
-exit 1
 EOF
 chmod 0755 "${FAKEBIN}/systemctl" "${FAKEBIN}/curl"
 
-PATH="${FAKEBIN}:${PATH}" VPNX7_ENV_FILE="${ENV_FILE}" VPNX7_DATA_DIR="${DATA}" VPNX7_BACKUP_DIR="${BACKUPS}" VPNX7_INSTALL_DIR="${INSTALL}" VPNX7_HEALTH_ATTEMPTS=2 VPNX7_HEALTH_SLEEP=0 bash "${ROOT}/scripts/restore-db.sh" "${TMP}/replacement.sqlite3.gz"
+common_env=(
+  "PATH=${FAKEBIN}:${PATH}"
+  "VPNX7_ENV_FILE=${ENV_FILE}"
+  "VPNX7_DATA_DIR=${DATA}"
+  "VPNX7_BACKUP_DIR=${BACKUPS}"
+  "VPNX7_INSTALL_DIR=${INSTALL}"
+  "VPNX7_HEALTH_ATTEMPTS=2"
+  "VPNX7_HEALTH_SLEEP=0"
+)
 
-VALUE="$(python3 - "${DATA}/vpnx7.db" <<'PY'
-import sqlite3, sys
-c=sqlite3.connect(sys.argv[1])
-print(c.execute("SELECT value FROM proof").fetchone()[0])
-c.close()
-PY
-)"
-[ "${VALUE}" = "new" ]
-
+echo "restore selftest: successful restore"
+make_db "${DATA}/vpnx7.db" "old"
+GOOD_ARCHIVE="$(make_archive new)"
+env "${common_env[@]}"   VPNX7_FAKE_CURL_MODE=success   bash "${ROOT}/scripts/restore-db.sh" "${GOOD_ARCHIVE}"
+[ "$(read_proof "${DATA}/vpnx7.db")" = "new" ]
 find "${BACKUPS}" -maxdepth 1 -name 'vpnx7-*.sqlite3.gz' -type f | grep -q .
 
-echo "selftest: failed restored health triggers database rollback"
-python3 - "${DATA}/vpnx7.db" <<'PY'
-import sqlite3, sys
-c=sqlite3.connect(sys.argv[1])
-c.execute("DELETE FROM proof")
-c.execute("INSERT INTO proof(value) VALUES('old-before-failed-restore')")
-c.commit()
-c.close()
-PY
+echo "restore selftest: rejected restore rolls back previous database"
+make_db "${DATA}/vpnx7.db" "rollback-old"
+ROLLBACK_ARCHIVE="$(make_archive rollback-new)"
+rm -f "${CURL_STATE}"
 
-COUNTER="${TMP}/curl-counter"
-rm -f "${COUNTER}"
 set +e
-PATH="${FAKEBIN}:${PATH}" \
-VPNX7_SELFTEST_CURL_MODE=fail_then_pass \
-VPNX7_SELFTEST_CURL_COUNTER="${COUNTER}" \
-VPNX7_SELFTEST_FAIL_COUNT=2 \
-VPNX7_ENV_FILE="${ENV_FILE}" \
-VPNX7_DATA_DIR="${DATA}" \
-VPNX7_BACKUP_DIR="${BACKUPS}" \
-VPNX7_INSTALL_DIR="${INSTALL}" \
-VPNX7_HEALTH_ATTEMPTS=2 \
-VPNX7_HEALTH_SLEEP=0 \
-bash "${ROOT}/scripts/restore-db.sh" "${TMP}/replacement.sqlite3.gz"
+env "${common_env[@]}"   VPNX7_FAKE_CURL_MODE=fail-first   VPNX7_FAKE_CURL_STATE="${CURL_STATE}"   bash "${ROOT}/scripts/restore-db.sh" "${ROLLBACK_ARCHIVE}"
 RC=$?
 set -e
-[ "${RC}" -eq 12 ]
 
-VALUE="$(python3 - "${DATA}/vpnx7.db" <<'PY'
-import sqlite3, sys
-c=sqlite3.connect(sys.argv[1])
-print(c.execute("SELECT value FROM proof").fetchone()[0])
-c.close()
-PY
-)"
-[ "${VALUE}" = "old-before-failed-restore" ]
+if [ "${RC}" -ne 12 ]; then
+  echo "Expected restore rejection exit 12, got ${RC}" >&2
+  exit 20
+fi
+if [ "$(read_proof "${DATA}/vpnx7.db")" != "rollback-old" ]; then
+  echo "Pre-restore database was not recovered after failed health check." >&2
+  exit 21
+fi
 
 echo "VPNX7 RESTORE SELFTEST PASS"

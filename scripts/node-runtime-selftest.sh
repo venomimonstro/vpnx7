@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+on_error() {
+  local rc="$?"
+  echo "NODE RUNTIME SELFTEST FAILED: rc=${rc} line=${BASH_LINENO[0]:-unknown} command=${BASH_COMMAND}" >&2
+  exit "${rc}"
+}
+trap on_error ERR
+
 if [ "${EUID}" -ne 0 ]; then
   echo "node-runtime-selftest must run as root" >&2
   exit 1
@@ -16,7 +23,9 @@ XRAY_SHA256="0eec3ed4163c273d8c8bf821f7d219e257921cf584aa3fb970715e458e631978"
 
 curl -fL --retry 3 --connect-timeout 10 --max-time 180   "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip"   -o "${TMP}/xray.zip"
 printf '%s  %s\n' "${XRAY_SHA256}" "${TMP}/xray.zip" | sha256sum -c -
+echo "selftest: unzip Xray"
 unzip -q "${TMP}/xray.zip" -d "${TMP}/xray"
+echo "selftest: install Xray"
 install -m 0755 "${TMP}/xray/xray" /usr/local/bin/xray
 
 if ! getent group vpnx7-node >/dev/null; then
@@ -24,6 +33,7 @@ if ! getent group vpnx7-node >/dev/null; then
 fi
 install -d -m 0750 -o root -g vpnx7-node /etc/vpnx7-node /etc/xray
 
+echo "selftest: generate REALITY key"
 KEYS="$(/usr/local/bin/xray x25519)"
 PRIVATE_KEY="$(printf '%s\n' "${KEYS}" | awk -F': *' 'tolower($1) ~ /^private ?key$/ || tolower($1) == "privatekey" {print $2; exit}')"
 [ -n "${PRIVATE_KEY}" ]
@@ -43,6 +53,7 @@ REALITY_SHORT_ID=0011223344556677
 EOF
 chmod 0600 /etc/vpnx7-node/node.env
 
+echo "selftest: extract node runtime"
 awk '
   /cat >\/usr\/local\/sbin\/vpnx7-node-sync <<'\''SYNC'\''/ { capture=1; next }
   capture && /^SYNC$/ { exit }

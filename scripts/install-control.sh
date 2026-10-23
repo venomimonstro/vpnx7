@@ -107,8 +107,11 @@ if ! command -v systemctl >/dev/null 2>&1; then
   exit 3
 fi
 
+if ! getent group vpnx7 >/dev/null 2>&1; then
+  groupadd --system vpnx7
+fi
 if ! id vpnx7 >/dev/null 2>&1; then
-  useradd --system --home "${DATA_DIR}" --shell /usr/sbin/nologin vpnx7
+  useradd --system --gid vpnx7 --home "${DATA_DIR}" --shell /usr/sbin/nologin vpnx7
 fi
 
 install -d -m 0750 -o root -g vpnx7 "${ENV_DIR}"

@@ -587,10 +587,24 @@ def admin_toggle_node(node_id: str, authorization: str | None = Header(default=N
             raise HTTPException(status_code=404, detail="node not found")
         enabled = 0 if row["enabled"] else 1
         disabled_at = utcnow_iso() if not enabled else None
-        conn.execute(
-            "UPDATE nodes SET enabled=?, disabled_at=? WHERE id=?",
-            (enabled, disabled_at, node_id),
-        )
+        if enabled:
+            # A previously disabled node may have a fresh "ok" report that only
+            # means "Xray is intentionally stopped". Never expose it until a
+            # post-enable sync starts Xray and reports success again.
+            conn.execute(
+                """
+                UPDATE nodes
+                SET enabled=1, disabled_at=NULL, last_sync_ok=NULL,
+                    last_error='awaiting post-enable node sync'
+                WHERE id=?
+                """,
+                (node_id,),
+            )
+        else:
+            conn.execute(
+                "UPDATE nodes SET enabled=0, disabled_at=? WHERE id=?",
+                (disabled_at, node_id),
+            )
     return {
         "id": node_id,
         "enabled": bool(enabled),

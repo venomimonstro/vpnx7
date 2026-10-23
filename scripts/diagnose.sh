@@ -50,6 +50,24 @@ if systemctl cat vpnx7-control.service >/dev/null 2>&1; then
     fi
     if gzip -t "$LATEST_BACKUP" >/dev/null 2>&1; then
       pass "latest backup gzip integrity"
+      BACKUP_DB_TMP="$(mktemp)"
+      if gzip -dc "$LATEST_BACKUP" >"$BACKUP_DB_TMP" 2>/dev/null && \
+         python3 - "$BACKUP_DB_TMP" <<'PY'
+import sqlite3, sys
+path = sys.argv[1]
+conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+try:
+    result = conn.execute("PRAGMA integrity_check").fetchone()
+finally:
+    conn.close()
+raise SystemExit(0 if result and result[0] == "ok" else 1)
+PY
+      then
+        pass "latest backup SQLite integrity"
+      else
+        fail "latest backup SQLite integrity check failed"
+      fi
+      rm -f "$BACKUP_DB_TMP"
     else
       fail "latest backup gzip is corrupt"
     fi

@@ -95,6 +95,12 @@ Risk: a release or restore can damage the access database.
 
 Fix: SQLite uses WAL, busy timeout and synchronous FULL. A consistent online backup with `PRAGMA integrity_check` is mandatory before a release switch. Daily persistent backups are installed. Restore validates the requested backup and automatically returns to a pre-restore backup if application health fails.
 
+### Database migration rollback compatibility
+
+Risk: application code can be rolled back while a new schema migration has already touched the live database.
+
+Fix/policy: the normal rolling update path permits only backward-compatible additive migrations (new tables, indexes or nullable/defaulted columns). Destructive or semantic migrations are a maintenance operation and must use a separately tested database restore/migration procedure. The current schema migrations follow the additive rule.
+
 ### Stale/dead node in new subscriptions
 
 Risk: a node may remain enabled in the database even though its runtime is broken.

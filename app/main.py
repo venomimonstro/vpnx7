@@ -383,6 +383,7 @@ def node_desired(node_id: str, authorization: str | None = Header(default=None))
             "id": node["id"],
             "name": node["name"],
             "geo": node["geo"],
+            "host": node["host"],
             "port": node["port"],
             "sni": node["sni"],
             "enabled": bool(node["enabled"]),

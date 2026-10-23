@@ -179,6 +179,10 @@ with TestClient(app) as client:
     ).json()
     if enabled.get("state") != "active":
         raise AssertionError(f"re-enabled node did not enter active state: {enabled}")
+
+    # Re-enabling must NOT immediately publish a node whose Xray was stopped
+    # during drain. Only a fresh successful node report makes it eligible.
+    expect(client.get(f"/sub/{sub_token}"), 503)
     expect(
         client.post(
             f"/api/v1/nodes/{node_id}/report",

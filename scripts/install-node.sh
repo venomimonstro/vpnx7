@@ -55,7 +55,87 @@ case "${ARCH}" in
 esac
 
 TMP_DIR="$(mktemp -d)"
+UNIT_STAGE_DIR="${TMP_DIR}/units"
+LOCAL_ROLLBACK_DIR="${TMP_DIR}/rollback"
+SYNC_STAGE="${TMP_DIR}/vpnx7-node-sync"
+mkdir -p "${UNIT_STAGE_DIR}" "${LOCAL_ROLLBACK_DIR}"
 trap 'rm -rf "${TMP_DIR}"' EXIT
+
+backup_path() {
+  local src="$1"
+  local key="$2"
+  if [ -e "${src}" ]; then
+    cp -a "${src}" "${LOCAL_ROLLBACK_DIR}/${key}"
+  else
+    : >"${LOCAL_ROLLBACK_DIR}/${key}.missing"
+  fi
+}
+
+restore_path() {
+  local dst="$1"
+  local key="$2"
+  if [ -f "${LOCAL_ROLLBACK_DIR}/${key}.missing" ]; then
+    rm -f "${dst}"
+  elif [ -e "${LOCAL_ROLLBACK_DIR}/${key}" ]; then
+    cp -a "${LOCAL_ROLLBACK_DIR}/${key}" "${dst}"
+  fi
+}
+
+XRAY_WAS_ACTIVE=0
+TIMER_WAS_ACTIVE=0
+
+backup_existing_runtime() {
+  [ "${EXISTING:-0}" -eq 1 ] || return 0
+  systemctl is-active --quiet vpnx7-xray.service && XRAY_WAS_ACTIVE=1 || true
+  systemctl is-active --quiet vpnx7-node-sync.timer && TIMER_WAS_ACTIVE=1 || true
+  backup_path "${ENV_FILE}" node.env
+  backup_path /usr/local/sbin/vpnx7-node-sync node-sync
+  backup_path /etc/systemd/system/vpnx7-xray.service xray.service
+  backup_path /etc/systemd/system/vpnx7-node-sync.service sync.service
+  backup_path /etc/systemd/system/vpnx7-node-sync.timer sync.timer
+  backup_path "${XRAY_BIN}" xray.bin
+  backup_path "${CONFIG_FILE}" xray.config
+}
+
+rollback_existing_runtime() {
+  [ "${EXISTING:-0}" -eq 1 ] || return 0
+  echo "Restoring previous VPNX7 node runtime." >&2
+  systemctl stop vpnx7-node-sync.timer >/dev/null 2>&1 || true
+  systemctl stop vpnx7-xray.service >/dev/null 2>&1 || true
+
+  restore_path "${ENV_FILE}" node.env
+  restore_path /usr/local/sbin/vpnx7-node-sync node-sync
+  restore_path /etc/systemd/system/vpnx7-xray.service xray.service
+  restore_path /etc/systemd/system/vpnx7-node-sync.service sync.service
+  restore_path /etc/systemd/system/vpnx7-node-sync.timer sync.timer
+  restore_path "${XRAY_BIN}" xray.bin
+  restore_path "${CONFIG_FILE}" xray.config
+
+  systemctl daemon-reload || true
+
+  if [ "${TIMER_WAS_ACTIVE}" -eq 1 ]; then
+    systemctl enable --now vpnx7-node-sync.timer >/dev/null 2>&1 || true
+  else
+    systemctl disable --now vpnx7-node-sync.timer >/dev/null 2>&1 || true
+  fi
+
+  if [ "${XRAY_WAS_ACTIVE}" -eq 1 ]; then
+    systemctl restart vpnx7-xray.service >/dev/null 2>&1 || true
+  else
+    systemctl stop vpnx7-xray.service >/dev/null 2>&1 || true
+  fi
+}
+
+abort_node_install() {
+  local code="${1:-12}"
+  if [ "${EXISTING:-0}" -eq 1 ]; then
+    rollback_existing_runtime
+  else
+    systemctl disable --now vpnx7-node-sync.timer >/dev/null 2>&1 || true
+    systemctl disable --now vpnx7-xray.service >/dev/null 2>&1 || true
+  fi
+  exit "${code}"
+}
 
 echo "[1/8] Downloading pinned Xray ${XRAY_VERSION}..."
 curl -fL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 180   "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/${ASSET}"   -o "${TMP_DIR}/xray.zip"

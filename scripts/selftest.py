@@ -136,9 +136,28 @@ with TestClient(app) as client:
     if activation1["id"] != activation2["id"]:
         raise AssertionError("order activation is not idempotent")
 
-    expect(client.post(f"/api/admin/nodes/{node_id}/toggle", headers=ADMIN), 200)
+    disabled = expect(
+        client.post(f"/api/admin/nodes/{node_id}/toggle", headers=ADMIN),
+        200,
+    ).json()
+    if disabled.get("state") != "draining":
+        raise AssertionError(f"disabled node did not enter draining state: {disabled}")
+
     expect(client.get(f"/sub/{sub_token}"), 503)
-    expect(client.post(f"/api/admin/nodes/{node_id}/toggle", headers=ADMIN), 200)
+
+    drained = expect(
+        client.get(f"/api/v1/nodes/{node_id}/desired", headers=node_auth),
+        200,
+    ).json()
+    if drained["node"]["enabled"] is not False or drained["clients"] != []:
+        raise AssertionError(f"disabled node still received client credentials: {drained}")
+
+    enabled = expect(
+        client.post(f"/api/admin/nodes/{node_id}/toggle", headers=ADMIN),
+        200,
+    ).json()
+    if enabled.get("state") != "active":
+        raise AssertionError(f"re-enabled node did not enter active state: {enabled}")
     expect(
         client.post(
             f"/api/v1/nodes/{node_id}/report",

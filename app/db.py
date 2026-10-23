@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS nodes (
     last_seen TEXT,
     last_sync_ok TEXT,
     last_error TEXT,
-    xray_version TEXT
+    xray_version TEXT,
+    disabled_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS clients (
@@ -72,6 +73,7 @@ MIGRATION_COLUMNS = {
         "last_sync_ok": "TEXT",
         "last_error": "TEXT",
         "xray_version": "TEXT",
+        "disabled_at": "TEXT",
     },
     "orders": {
         "request_ip": "TEXT",
@@ -112,7 +114,7 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_nodes_last_sync_ok ON nodes(last_sync_ok)"
         )
         conn.execute(
-            "INSERT OR REPLACE INTO metadata(key, value) VALUES('schema_version', '2')"
+            "INSERT OR REPLACE INTO metadata(key, value) VALUES('schema_version', '3')"
         )
 
 

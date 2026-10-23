@@ -272,6 +272,10 @@ if ! [[ "${NODE_PORT}" =~ ^[0-9]+$ ]] || [ "${NODE_PORT}" -lt 1 ] || [ "${NODE_P
   echo "Invalid VPN node port: ${NODE_PORT}" >&2
   exit 6
 fi
+if ! [[ "${REALITY_SNI}" =~ ^([A-Za-z0-9-]+\.)+[A-Za-z0-9-]+$ ]]; then
+  echo "VPNX7_REALITY_SNI must be a plain DNS hostname, got: ${REALITY_SNI}" >&2
+  exit 7
+fi
 
 if ss -ltnH "sport = :${NODE_PORT}" | grep -q .; then
   if ! systemctl is-active --quiet vpnx7-xray.service 2>/dev/null || \
@@ -486,6 +490,10 @@ else
   fi
   ss -ltnH "sport = :$NODE_PORT" | grep -q .
 fi
+
+# REALITY depends on its target being resolvable and reachable from the node.
+# A live process without working target egress must not be advertised as healthy.
+curl -sS --connect-timeout 5 --max-time 10 -o /dev/null "https://$REALITY_SNI/"
 
 XVER="$(/usr/local/bin/xray version | head -n1)"
 curl -fsS --connect-timeout 5 --max-time 10   -H "Authorization: Bearer $NODE_TOKEN"   -H 'Content-Type: application/json'   -d "$(jq -n --arg v "$XVER" '{ok:true,xray_version:$v}')"   "$CONTROL_URL/api/v1/nodes/$NODE_ID/report" >/dev/null

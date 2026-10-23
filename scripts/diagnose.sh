@@ -66,7 +66,7 @@ if systemctl cat vpnx7-xray.service >/dev/null 2>&1; then
   if systemctl is-active --quiet vpnx7-xray.service; then
     pass "xray service active"
   else
-    fail "xray service inactive"
+    warn "xray service inactive (valid only when node is disabled centrally)"
   fi
   if systemctl is-active --quiet vpnx7-node-sync.timer; then
     pass "sync timer active"
@@ -98,16 +98,39 @@ if systemctl cat vpnx7-xray.service >/dev/null 2>&1; then
   if [ -f /etc/vpnx7-node/node.env ]; then
     # shellcheck disable=SC1091
     source /etc/vpnx7-node/node.env
-    if ss -ltnH "sport = :${NODE_PORT:-443}" | grep -q .; then
-      pass "TCP port ${NODE_PORT:-443} is listening"
-    else
-      fail "TCP port ${NODE_PORT:-443} is not listening"
-    fi
-
     DESIRED_TMP="$(mktemp)"
-    if curl -fsS --max-time 8       -H "Authorization: Bearer $NODE_TOKEN"       "$CONTROL_URL/api/v1/nodes/$NODE_ID/desired" >"$DESIRED_TMP" 2>/dev/null; then
+    if curl -fsS --max-time 8 \
+      -H "Authorization: Bearer $NODE_TOKEN" \
+      "$CONTROL_URL/api/v1/nodes/$NODE_ID/desired" >"$DESIRED_TMP" 2>/dev/null; then
       COUNT="$(jq -r '.clients | length' "$DESIRED_TMP" 2>/dev/null || echo '?')"
-      pass "node authenticated to control plane; active clients=$COUNT"
+      ENABLED="$(jq -r '.node.enabled // empty' "$DESIRED_TMP" 2>/dev/null || true)"
+      pass "node authenticated to control plane; desired enabled=$ENABLED; active clients=$COUNT"
+
+      if [ "$ENABLED" = "false" ]; then
+        if systemctl is-active --quiet vpnx7-xray.service; then
+          fail "node is disabled centrally but Xray is still active"
+        else
+          pass "disabled node has Xray stopped"
+        fi
+        if ss -ltnH "sport = :${NODE_PORT:-443}" | grep -q .; then
+          fail "disabled node still listens on TCP/${NODE_PORT:-443}"
+        else
+          pass "disabled node exposes no VPN listener"
+        fi
+      elif [ "$ENABLED" = "true" ]; then
+        if systemctl is-active --quiet vpnx7-xray.service; then
+          pass "enabled node has Xray active"
+        else
+          fail "enabled node has Xray inactive"
+        fi
+        if ss -ltnH "sport = :${NODE_PORT:-443}" | grep -q .; then
+          pass "enabled node listens on TCP/${NODE_PORT:-443}"
+        else
+          fail "enabled node is not listening on TCP/${NODE_PORT:-443}"
+        fi
+      else
+        fail "control plane returned invalid node.enabled state"
+      fi
     else
       fail "node cannot pull desired state from control plane"
     fi

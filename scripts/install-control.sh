@@ -76,20 +76,20 @@ CONTROL_PORT="$(grep '^VPNX7_PORT=' "${ENV_FILE}" | cut -d= -f2- || true)"
 CONTROL_PORT="${CONTROL_PORT:-8080}"
 install -d -m 0700 /var/backups/vpnx7
 
-echo "[1/6] Building a clean staged release..."
+echo "[1/7] Building a clean staged release..."
 rm -rf "${STAGE_DIR}"
 git clone --depth 1 --branch main "${REPO_URL}" "${STAGE_DIR}"
 
 python3 -m venv "${STAGE_DIR}/.venv"
 "${STAGE_DIR}/.venv/bin/python" -m pip install   --disable-pip-version-check --no-cache-dir   -r "${STAGE_DIR}/requirements.txt"
 
-echo "[2/6] Static validation..."
+echo "[2/7] Static validation..."
 "${STAGE_DIR}/.venv/bin/python" -m compileall -q "${STAGE_DIR}/app" "${STAGE_DIR}/scripts"
 for script in "${STAGE_DIR}"/scripts/*.sh; do
   bash -n "${script}"
 done
 
-echo "[3/6] Isolated application and migration self-tests..."
+echo "[3/7] Isolated application and migration self-tests..."
 (
   cd "${STAGE_DIR}"
   "${STAGE_DIR}/.venv/bin/python" scripts/migration-selftest.py
@@ -195,7 +195,7 @@ Unit=vpnx7-backup.service
 WantedBy=timers.target
 EOF
 
-echo "[4/6] Creating pre-deploy database backup..."
+echo "[4/7] Creating pre-deploy database backup..."
 LIVE_DB="$(grep '^VPNX7_DATABASE=' "${ENV_FILE}" | cut -d= -f2- || true)"
 LIVE_DB="${LIVE_DB:-${DATA_DIR}/vpnx7.db}"
 if [ -f "${LIVE_DB}" ]; then

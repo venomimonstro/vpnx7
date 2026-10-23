@@ -266,7 +266,7 @@ def register_node(payload: NodeRegister, request: Request):
         if existing:
             raise HTTPException(
                 status_code=409,
-                detail="node name already registered; rerun the installer on the existing node or delete the stale node in admin first",
+                detail="node name already registered; update the enrolled node with its stored credentials, or enroll replacement hardware under a new unique node name",
             )
         conn.execute(
             """

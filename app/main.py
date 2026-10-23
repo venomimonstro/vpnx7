@@ -107,10 +107,10 @@ def require_node(node_id: str, authorization: str | None) -> None:
         raise HTTPException(status_code=401, detail="node authentication failed")
     with db() as conn:
         row = conn.execute(
-            "SELECT token_hash, enabled FROM nodes WHERE id = ?",
+            "SELECT token_hash FROM nodes WHERE id = ?",
             (node_id,),
         ).fetchone()
-    if not row or not row["enabled"] or not secure_equal(
+    if not row or not secure_equal(
         token_hash(supplied), row["token_hash"]
     ):
         raise HTTPException(status_code=401, detail="node authentication failed")
@@ -380,6 +380,7 @@ def node_desired(node_id: str, authorization: str | None = Header(default=None))
             "geo": node["geo"],
             "port": node["port"],
             "sni": node["sni"],
+            "enabled": bool(node["enabled"]),
         },
         "clients": [
             {
@@ -575,17 +576,6 @@ def admin_toggle_node(node_id: str, authorization: str | None = Header(default=N
         enabled = 0 if row["enabled"] else 1
         conn.execute("UPDATE nodes SET enabled=? WHERE id=?", (enabled, node_id))
     return {"id": node_id, "enabled": bool(enabled)}
-
-
-@app.delete("/api/admin/nodes/{node_id}")
-def admin_delete_node(node_id: str, authorization: str | None = Header(default=None)):
-    require_admin(authorization)
-    with db(immediate=True) as conn:
-        row = conn.execute("SELECT id FROM nodes WHERE id=?", (node_id,)).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="node not found")
-        conn.execute("DELETE FROM nodes WHERE id=?", (node_id,))
-    return {"status": "deleted", "id": node_id}
 
 
 @app.get("/api/admin/clients")

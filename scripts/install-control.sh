@@ -184,7 +184,17 @@ Unit=vpnx7-backup.service
 WantedBy=timers.target
 EOF
 
-echo "[4/6] Switching release atomically..."
+echo "[4/6] Creating pre-deploy database backup..."
+LIVE_DB="$(grep '^VPNX7_DATABASE=' "${ENV_FILE}" | cut -d= -f2- || true)"
+LIVE_DB="${LIVE_DB:-${DATA_DIR}/vpnx7.db}"
+if [ -f "${LIVE_DB}" ]; then
+  VPNX7_DATABASE="${LIVE_DB}" \
+  VPNX7_BACKUP_DIR=/var/backups/vpnx7 \
+  VPNX7_BACKUP_RETENTION=14 \
+    "${STAGE_DIR}/.venv/bin/python" "${STAGE_DIR}/scripts/backup-db.py"
+fi
+
+echo "[5/7] Switching release atomically..."
 HAD_OLD=0
 if [ -d "${INSTALL_DIR}" ]; then
   HAD_OLD=1
@@ -196,7 +206,7 @@ mv "${STAGE_DIR}" "${INSTALL_DIR}"
 systemctl daemon-reload
 systemctl enable vpnx7-control.service >/dev/null
 
-echo "[5/6] Restarting and checking health..."
+echo "[6/7] Restarting and checking health..."
 if ! systemctl restart vpnx7-control.service; then
   HEALTH_OK=0
 else
@@ -236,7 +246,7 @@ systemctl enable --now vpnx7-backup.timer >/dev/null
 systemctl start vpnx7-backup.service
 systemctl is-active --quiet vpnx7-backup.timer
 
-echo "[6/6] Final verification..."
+echo "[7/7] Final verification..."
 curl -fsS --max-time 3 http://127.0.0.1:${CONTROL_PORT}/healthz
 echo
 systemctl is-active --quiet vpnx7-control.service

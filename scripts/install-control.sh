@@ -54,9 +54,9 @@ backup_units() {
 install_staged_units() {
   local unit
   for unit in "${UNITS[@]}"; do
-    install -m 0644 "${UNIT_STAGE_DIR}/${unit}" "${SYSTEMD_DIR}/${unit}"
+    install -m 0644 "${UNIT_STAGE_DIR}/${unit}" "${SYSTEMD_DIR}/${unit}" || return 1
   done
-  systemctl daemon-reload
+  systemctl daemon-reload || return 1
 }
 
 rollback_release() {
@@ -286,9 +286,20 @@ if [ -d "${INSTALL_DIR}" ]; then
   rm -rf "${ROLLBACK_DIR}"
   mv "${INSTALL_DIR}" "${ROLLBACK_DIR}"
 fi
-mv "${STAGE_DIR}" "${INSTALL_DIR}"
 
-install_staged_units
+if ! mv "${STAGE_DIR}" "${INSTALL_DIR}"; then
+  echo "Could not switch staged application into place." >&2
+  if [ "${HAD_OLD}" -eq 1 ] && [ -d "${ROLLBACK_DIR}" ]; then
+    mv "${ROLLBACK_DIR}" "${INSTALL_DIR}"
+  fi
+  exit 8
+fi
+
+if ! install_staged_units; then
+  echo "Could not install new systemd unit set." >&2
+  rollback_release
+  exit 9
+fi
 
 if command -v systemd-analyze >/dev/null 2>&1; then
   if ! systemd-analyze verify     "${SYSTEMD_DIR}/vpnx7-control.service"     "${SYSTEMD_DIR}/vpnx7-bot.service"     "${SYSTEMD_DIR}/vpnx7-backup.service"     "${SYSTEMD_DIR}/vpnx7-backup.timer"; then
@@ -298,7 +309,11 @@ if command -v systemd-analyze >/dev/null 2>&1; then
   fi
 fi
 
-systemctl enable vpnx7-control.service >/dev/null
+if ! systemctl enable vpnx7-control.service >/dev/null; then
+  echo "Could not enable new control service." >&2
+  rollback_release
+  exit 9
+fi
 
 echo "[7/8] Restarting and checking live health..."
 HEALTH_OK=0
@@ -319,16 +334,23 @@ if [ "${HEALTH_OK}" -ne 1 ]; then
 fi
 
 BOT_TOKEN="$(grep '^VPNX7_TELEGRAM_BOT_TOKEN=' "${ENV_FILE}" | cut -d= -f2- || true)"
+POST_HEALTH_OK=1
 if [ -n "${BOT_TOKEN}" ]; then
-  systemctl enable vpnx7-bot.service >/dev/null
-  systemctl restart vpnx7-bot.service
+  systemctl enable vpnx7-bot.service >/dev/null || POST_HEALTH_OK=0
+  systemctl restart vpnx7-bot.service || POST_HEALTH_OK=0
 else
   systemctl disable --now vpnx7-bot.service >/dev/null 2>&1 || true
 fi
 
-systemctl enable --now vpnx7-backup.timer >/dev/null
-systemctl start vpnx7-backup.service
-systemctl is-active --quiet vpnx7-backup.timer
+systemctl enable --now vpnx7-backup.timer >/dev/null || POST_HEALTH_OK=0
+systemctl start vpnx7-backup.service || POST_HEALTH_OK=0
+systemctl is-active --quiet vpnx7-backup.timer || POST_HEALTH_OK=0
+
+if [ "${POST_HEALTH_OK}" -ne 1 ]; then
+  echo "Post-health service activation failed." >&2
+  rollback_release
+  exit 11
+fi
 
 echo "[8/8] Final verification..."
 curl -fsS --max-time 3 "http://127.0.0.1:${CONTROL_PORT}/healthz"

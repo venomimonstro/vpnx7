@@ -61,6 +61,7 @@ install_staged_units() {
 
 rollback_release() {
   echo "Rolling back control-plane code and systemd units." >&2
+  systemctl stop vpnx7-backup.timer >/dev/null 2>&1 || true
   systemctl stop vpnx7-bot.service >/dev/null 2>&1 || true
   systemctl stop vpnx7-control.service >/dev/null 2>&1 || true
 
@@ -77,8 +78,27 @@ rollback_release() {
 
   if [ "${HAD_OLD:-0}" -eq 1 ] && [ -d "${INSTALL_DIR}" ]; then
     systemctl restart vpnx7-control.service || true
+
+    if [ "${BOT_WAS_ENABLED_BEFORE:-0}" -eq 1 ]; then
+      systemctl enable vpnx7-bot.service >/dev/null 2>&1 || true
+    else
+      systemctl disable vpnx7-bot.service >/dev/null 2>&1 || true
+    fi
     if [ "${BOT_WAS_ACTIVE_BEFORE:-0}" -eq 1 ]; then
       systemctl restart vpnx7-bot.service || true
+    else
+      systemctl stop vpnx7-bot.service >/dev/null 2>&1 || true
+    fi
+
+    if [ "${BACKUP_TIMER_WAS_ENABLED_BEFORE:-0}" -eq 1 ]; then
+      systemctl enable vpnx7-backup.timer >/dev/null 2>&1 || true
+    else
+      systemctl disable vpnx7-backup.timer >/dev/null 2>&1 || true
+    fi
+    if [ "${BACKUP_TIMER_WAS_ACTIVE_BEFORE:-0}" -eq 1 ]; then
+      systemctl start vpnx7-backup.timer >/dev/null 2>&1 || true
+    else
+      systemctl stop vpnx7-backup.timer >/dev/null 2>&1 || true
     fi
   else
     systemctl disable vpnx7-control.service vpnx7-bot.service vpnx7-backup.timer >/dev/null 2>&1 || true
@@ -281,7 +301,13 @@ fi
 echo "[6/8] Switching code and unit files..."
 HAD_OLD=0
 BOT_WAS_ACTIVE_BEFORE=0
+BOT_WAS_ENABLED_BEFORE=0
+BACKUP_TIMER_WAS_ACTIVE_BEFORE=0
+BACKUP_TIMER_WAS_ENABLED_BEFORE=0
 systemctl is-active --quiet vpnx7-bot.service && BOT_WAS_ACTIVE_BEFORE=1 || true
+systemctl is-enabled --quiet vpnx7-bot.service && BOT_WAS_ENABLED_BEFORE=1 || true
+systemctl is-active --quiet vpnx7-backup.timer && BACKUP_TIMER_WAS_ACTIVE_BEFORE=1 || true
+systemctl is-enabled --quiet vpnx7-backup.timer && BACKUP_TIMER_WAS_ENABLED_BEFORE=1 || true
 
 backup_units
 

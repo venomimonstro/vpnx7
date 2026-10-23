@@ -152,7 +152,7 @@ rm -rf "${STAGE_DIR}"
 git clone --depth 1 --branch main "${REPO_URL}" "${STAGE_DIR}"
 
 python3 -m venv "${STAGE_DIR}/.venv"
-"${STAGE_DIR}/.venv/bin/python" -m pip install   --disable-pip-version-check --no-cache-dir   -r "${STAGE_DIR}/requirements.txt"
+"${STAGE_DIR}/.venv/bin/python" -m pip install   --disable-pip-version-check --no-cache-dir   -r "${STAGE_DIR}/requirements.lock"
 "${STAGE_DIR}/.venv/bin/python" -m pip check
 
 echo "[2/8] Static validation..."

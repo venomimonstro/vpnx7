@@ -151,6 +151,18 @@ if ! id vpnx7-node >/dev/null 2>&1; then
 fi
 install -d -m 0750 -o root -g vpnx7-node "${ENV_DIR}" "${CONFIG_DIR}"
 
+AVAILABLE_KB="$(df -Pk / | awk 'NR==2 {print $4}')"
+if [ -z "${AVAILABLE_KB}" ] || [ "${AVAILABLE_KB}" -lt 153600 ]; then
+  echo "At least 150 MiB of free root filesystem space is required for a safe node update." >&2
+  exit 3
+fi
+WRITE_TEST="${ENV_DIR}/.write-test.$"
+if ! (umask 077 && : >"${WRITE_TEST}"); then
+  echo "Node state directory is not writable." >&2
+  exit 3
+fi
+rm -f "${WRITE_TEST}"
+
 EXISTING=0
 if [ -s "${ENV_FILE}" ]; then
   EXISTING=1
@@ -245,10 +257,13 @@ else
 fi
 
 echo "[2/8] Checking port and REALITY target..."
-if ss -ltnH "sport = :${NODE_PORT}" | grep -q . &&    ! systemctl is-active --quiet vpnx7-xray.service 2>/dev/null; then
-  echo "TCP port ${NODE_PORT} is already in use by another service." >&2
-  ss -ltnp "sport = :${NODE_PORT}" || true
-  exit 6
+if ss -ltnH "sport = :${NODE_PORT}" | grep -q .; then
+  if ! systemctl is-active --quiet vpnx7-xray.service 2>/dev/null || \
+     ! ss -ltnp "sport = :${NODE_PORT}" 2>/dev/null | grep -q 'xray'; then
+    echo "TCP port ${NODE_PORT} is already in use by another service." >&2
+    ss -ltnp "sport = :${NODE_PORT}" || true
+    exit 6
+  fi
 fi
 
 TLS_PING_OUTPUT="$(timeout 20 "${CANDIDATE}" tls ping "${REALITY_SNI}" 2>&1)" || {
@@ -275,6 +290,14 @@ if [ -z "${NODE_HOST}" ]; then
 fi
 if [ -z "${NODE_HOST}" ]; then
   echo "Could not determine the public node address. Set NODE_HOST explicitly." >&2
+  exit 8
+fi
+if [[ "${NODE_HOST}" == *:* ]]; then
+  echo "The stable installer currently requires an IPv4 address or DNS hostname, not a raw IPv6 literal." >&2
+  exit 8
+fi
+if [[ "${NODE_HOST}" =~ [[:space:]/] ]]; then
+  echo "Invalid NODE_HOST: ${NODE_HOST}" >&2
   exit 8
 fi
 
@@ -560,23 +583,36 @@ if ! systemctl start vpnx7-node-sync.service; then
 fi
 
 echo "[8/8] Final node verification..."
-systemctl is-active --quiet vpnx7-node-sync.timer
-FINAL_DESIRED="$(curl -fsS --connect-timeout 5 --max-time 10 \
-  -H "Authorization: Bearer ${NODE_TOKEN}" \
-  "${CONTROL_URL}/api/v1/nodes/${NODE_ID}/desired")"
-FINAL_ENABLED="$(printf '%s' "${FINAL_DESIRED}" | jq -r '.node.enabled')"
+FINAL_OK=1
+systemctl is-active --quiet vpnx7-node-sync.timer || FINAL_OK=0
 
-if [ "${FINAL_ENABLED}" = "true" ]; then
-  systemctl is-active --quiet vpnx7-xray.service
-  "${XRAY_BIN}" run -test -config "${CONFIG_FILE}" >/dev/null
-  ss -ltnH "sport = :${NODE_PORT}" | grep -q .
+FINAL_DESIRED=""
+if [ "${FINAL_OK}" -eq 1 ]; then
+  FINAL_DESIRED="$(curl -fsS --connect-timeout 5 --max-time 10 \
+    -H "Authorization: Bearer ${NODE_TOKEN}" \
+    "${CONTROL_URL}/api/v1/nodes/${NODE_ID}/desired")" || FINAL_OK=0
+fi
+
+FINAL_ENABLED=""
+if [ "${FINAL_OK}" -eq 1 ]; then
+  FINAL_ENABLED="$(printf '%s' "${FINAL_DESIRED}" | jq -er '.node.enabled | if . == true then "true" elif . == false then "false" else error("invalid node.enabled") end')" || FINAL_OK=0
+fi
+
+if [ "${FINAL_OK}" -eq 1 ] && [ "${FINAL_ENABLED}" = "true" ]; then
+  systemctl is-active --quiet vpnx7-xray.service || FINAL_OK=0
+  "${XRAY_BIN}" run -test -config "${CONFIG_FILE}" >/dev/null 2>&1 || FINAL_OK=0
+  ss -ltnH "sport = :${NODE_PORT}" | grep -q . || FINAL_OK=0
   STATUS_TEXT="healthy and serving"
-else
+elif [ "${FINAL_OK}" -eq 1 ] && [ "${FINAL_ENABLED}" = "false" ]; then
   if systemctl is-active --quiet vpnx7-xray.service; then
-    echo "Disabled node unexpectedly has Xray running." >&2
-    exit 13
+    FINAL_OK=0
   fi
   STATUS_TEXT="healthy, administratively disabled"
+fi
+
+if [ "${FINAL_OK}" -ne 1 ]; then
+  echo "Final node verification failed." >&2
+  abort_node_install 13
 fi
 
 echo

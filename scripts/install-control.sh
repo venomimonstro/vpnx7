@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 REPO_URL="${VPNX7_REPO_URL:-https://github.com/venomimonstro/vpnx7.git}"
+REPO_REF="${VPNX7_REPO_REF:-stable}"
 INSTALL_DIR="${VPNX7_INSTALL_DIR:-/opt/vpnx7}"
 ROLLBACK_DIR="${INSTALL_DIR}.rollback"
 STAGE_DIR="${INSTALL_DIR}.stage.$$"
@@ -172,7 +173,7 @@ CONTROL_PORT="${CONTROL_PORT:-8080}"
 
 echo "[1/8] Building a clean staged release..."
 rm -rf "${STAGE_DIR}"
-git clone --depth 1 --branch main "${REPO_URL}" "${STAGE_DIR}"
+git clone --depth 1 --branch "${REPO_REF}" "${REPO_URL}" "${STAGE_DIR}"
 
 python3 -m venv "${STAGE_DIR}/.venv"
 "${STAGE_DIR}/.venv/bin/python" -m pip install   --disable-pip-version-check --no-cache-dir   -r "${STAGE_DIR}/requirements.lock"
@@ -392,6 +393,7 @@ systemctl is-active --quiet vpnx7-backup.timer
 echo
 echo "VPNX7 control plane is healthy."
 echo "Release:    $(git -C "${INSTALL_DIR}" rev-parse --short HEAD)"
+echo "Release ref: ${REPO_REF}"
 echo "Public URL: $(grep '^VPNX7_PUBLIC_URL=' "${ENV_FILE}" | cut -d= -f2-)"
 echo "Admin:      $(grep '^VPNX7_PUBLIC_URL=' "${ENV_FILE}" | cut -d= -f2-)/admin"
 echo

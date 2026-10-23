@@ -37,7 +37,7 @@ jobs:
           done
 
       - name: Install shellcheck
-        run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y shellcheck jq unzip iproute2
 
       - name: Shellcheck
         run: shellcheck -e SC1090,SC1091,SC2015 scripts/*.sh
@@ -47,3 +47,6 @@ jobs:
 
       - name: Control-plane self-test
         run: python scripts/selftest.py
+
+      - name: Xray node runtime self-test
+        run: sudo bash scripts/node-runtime-selftest.sh

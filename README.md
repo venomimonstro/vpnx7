@@ -4,6 +4,12 @@ Lightweight self-hosted VPN control plane and geo-node system **without Marzban*
 
 VPNX7 is deliberately small and designed for weak VPS instances. The control plane manages access and subscriptions; user VPN traffic goes directly through independent Xray nodes.
 
+## Release channel
+
+Deploy only from the **`stable` branch**. The `main` branch is the development branch and is never used by the default installer.
+
+Every push to `main` must pass the complete CI matrix. Only after all jobs succeed does CI fast-forward `stable` to that exact commit. The control installer also clones `stable` by default. This prevents installing a commit whose tests are still running or have failed.
+
 ## Stable core
 
 - **Control plane:** FastAPI + SQLite WAL + one Uvicorn worker + systemd.
@@ -33,7 +39,7 @@ The main VPS can run both the control plane on 8080 and the first Xray node on 4
 On Debian/Ubuntu:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/venomimonstro/vpnx7/main/scripts/install-control.sh -o /tmp/vpnx7-control.sh
+curl -fsSL https://raw.githubusercontent.com/venomimonstro/vpnx7/stable/scripts/install-control.sh -o /tmp/vpnx7-control.sh
 sudo bash /tmp/vpnx7-control.sh http://MAIN_SERVER_IP:8080
 ```
 
@@ -62,7 +68,7 @@ Before any public/commercial use, the public control/subscription endpoint must 
 For an HTTP-only private test, the insecure choice must be explicit:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/venomimonstro/vpnx7/main/scripts/install-node.sh -o /tmp/vpnx7-node.sh
+curl -fsSL https://raw.githubusercontent.com/venomimonstro/vpnx7/stable/scripts/install-node.sh -o /tmp/vpnx7-node.sh
 
 sudo env \
   CONTROL_URL=http://MAIN_SERVER_IP:8080 \
@@ -136,7 +142,7 @@ sudo bash /opt/vpnx7/scripts/diagnose.sh
 On a standalone node:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/venomimonstro/vpnx7/main/scripts/diagnose.sh -o /tmp/vpnx7-diagnose.sh
+curl -fsSL https://raw.githubusercontent.com/venomimonstro/vpnx7/stable/scripts/diagnose.sh -o /tmp/vpnx7-diagnose.sh
 sudo bash /tmp/vpnx7-diagnose.sh
 ```
 
@@ -172,7 +178,9 @@ A client linked to the real Telegram user ID can use `/status` and `/access`.
 
 ## CI safety gate
 
-Every push to `main` runs on a clean Ubuntu runner:
+Every push to `main` runs on a clean Ubuntu runner. A successful full matrix automatically promotes that exact commit to `stable`; a failed or cancelled matrix leaves the existing `stable` deployment revision untouched.
+
+The gate includes:
 
 - pinned dependency installation;
 - Python compilation;

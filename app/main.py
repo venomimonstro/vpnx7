@@ -742,9 +742,9 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}.row{display:flex;flex-wrap:wrap
 <div class="card"><h3>Клиенты</h3><pre id="clients"></pre></div>
 <div class="card"><h3>Заявки</h3><pre id="orders"></pre></div>
 <script>
-function auth(){localStorage.setItem('vpnx7-admin',document.getElementById('token').value||localStorage.getItem('vpnx7-admin')||'');return {'Authorization':'Bearer '+localStorage.getItem('vpnx7-admin')}}
+function auth(){sessionStorage.setItem('vpnx7-admin',document.getElementById('token').value||sessionStorage.getItem('vpnx7-admin')||'');return {'Authorization':'Bearer '+sessionStorage.getItem('vpnx7-admin')}}
 async function getj(u){const r=await fetch(u,{headers:auth()});return [r,await r.json()]}
 async function loadAll(){for(const [id,u] of [['nodes','/api/admin/nodes'],['clients','/api/admin/clients'],['orders','/api/admin/orders']]){const [r,j]=await getj(u);document.getElementById(id).innerText=JSON.stringify(j,null,2)}}
 async function createClient(){const body={name:document.getElementById('name').value,email:document.getElementById('email').value||null,telegram_id:document.getElementById('tg').value||null,days:Number(document.getElementById('days').value||30)};const r=await fetch('/api/admin/clients',{method:'POST',headers:{...auth(),'Content-Type':'application/json'},body:JSON.stringify(body)});document.getElementById('created').innerText=JSON.stringify(await r.json(),null,2);loadAll()}
-document.getElementById('token').value=localStorage.getItem('vpnx7-admin')||'';
+document.getElementById('token').value=sessionStorage.getItem('vpnx7-admin')||'';
 </script></body></html>""")

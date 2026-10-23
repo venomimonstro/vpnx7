@@ -140,7 +140,12 @@ def fresh_cutoff_iso() -> str:
 
 
 def node_is_healthy(row) -> bool:
-    if not row or not row["enabled"] or not row["last_sync_ok"]:
+    if (
+        not row
+        or not row["enabled"]
+        or not row["last_sync_ok"]
+        or row["last_error"]
+    ):
         return False
     try:
         last_ok = datetime.fromisoformat(row["last_sync_ok"])
@@ -417,6 +422,7 @@ def subscription(subscription_token: str):
             WHERE enabled = 1
               AND public_key <> ''
               AND last_sync_ok IS NOT NULL
+              AND last_error IS NULL
               AND last_sync_ok >= ?
             ORDER BY geo, name
             """,

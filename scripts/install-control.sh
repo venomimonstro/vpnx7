@@ -73,11 +73,15 @@ python3 -m venv "${STAGE_DIR}/.venv"
 "${STAGE_DIR}/.venv/bin/python" -m pip install   --disable-pip-version-check --no-cache-dir   -r "${STAGE_DIR}/requirements.txt"
 
 echo "[2/6] Static validation..."
-"${STAGE_DIR}/.venv/bin/python" -m compileall -q   "${STAGE_DIR}/app" "${STAGE_DIR}/scripts/selftest.py"
+"${STAGE_DIR}/.venv/bin/python" -m compileall -q "${STAGE_DIR}/app" "${STAGE_DIR}/scripts"
+for script in "${STAGE_DIR}"/scripts/*.sh; do
+  bash -n "${script}"
+done
 
-echo "[3/6] Isolated application self-test..."
+echo "[3/6] Isolated application and migration self-tests..."
 (
   cd "${STAGE_DIR}"
+  "${STAGE_DIR}/.venv/bin/python" scripts/migration-selftest.py
   "${STAGE_DIR}/.venv/bin/python" scripts/selftest.py
 )
 

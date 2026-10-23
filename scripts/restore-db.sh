@@ -6,6 +6,8 @@ ENV_FILE="/etc/vpnx7/control.env"
 DATA_DIR="/var/lib/vpnx7"
 BACKUP_DIR="/var/backups/vpnx7"
 INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RUNTIME_PYTHON="${INSTALL_DIR}/.venv/bin/python"
+BACKUP_SCRIPT="${INSTALL_DIR}/scripts/backup-db.py"
 
 if [ "${EUID}" -ne 0 ]; then
   echo "Run as root." >&2
@@ -20,7 +22,7 @@ if [ ! -f "${ENV_FILE}" ]; then
   exit 3
 fi
 if [ ! -x "${RUNTIME_PYTHON}" ] || [ ! -f "${BACKUP_SCRIPT}" ]; then
-  echo "VPNX7 runtime is incomplete under ${ROOT}." >&2
+  echo "VPNX7 runtime is incomplete under ${INSTALL_DIR}." >&2
   exit 3
 fi
 

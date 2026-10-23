@@ -61,6 +61,9 @@ jobs:
       - name: SQLite backup round-trip self-test
         run: python scripts/backup-selftest.py
 
+      - name: SQLite restore smoke test
+        run: sudo bash scripts/restore-selftest.sh
+
       - name: Xray node runtime self-test
         if: matrix.python-version == '3.12'
         run: sudo bash scripts/node-runtime-selftest.sh

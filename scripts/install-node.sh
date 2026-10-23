@@ -28,6 +28,14 @@ if [ -z "${ARG_CONTROL_URL}" ]; then
 fi
 ARG_CONTROL_URL="${ARG_CONTROL_URL%/}"
 
+case "${ARG_CONTROL_URL}" in
+  https://*|http://*) ;;
+  *)
+    echo "CONTROL_URL must start with https:// or http://." >&2
+    exit 2
+    ;;
+esac
+
 if [[ "${ARG_CONTROL_URL}" == http://* ]] && [ "${ALLOW_HTTP}" != "1" ]; then
   echo "Refusing plaintext control traffic by default." >&2
   echo "For a private first test only, explicitly add VPNX7_ALLOW_HTTP=1." >&2
@@ -260,6 +268,11 @@ else
 fi
 
 echo "[2/8] Checking port and REALITY target..."
+if ! [[ "${NODE_PORT}" =~ ^[0-9]+$ ]] || [ "${NODE_PORT}" -lt 1 ] || [ "${NODE_PORT}" -gt 65535 ]; then
+  echo "Invalid VPN node port: ${NODE_PORT}" >&2
+  exit 6
+fi
+
 if ss -ltnH "sport = :${NODE_PORT}" | grep -q .; then
   if ! systemctl is-active --quiet vpnx7-xray.service 2>/dev/null || \
      ! ss -ltnp "sport = :${NODE_PORT}" 2>/dev/null | grep -q 'xray'; then

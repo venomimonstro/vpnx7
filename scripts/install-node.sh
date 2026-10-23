@@ -178,23 +178,42 @@ if [ -s "${ENV_FILE}" ]; then
 
   CONTROL_NODE_NAME="$(printf '%s' "${PREVIOUS_DESIRED}" | jq -r '.node.name // empty')"
   CONTROL_NODE_GEO="$(printf '%s' "${PREVIOUS_DESIRED}" | jq -r '.node.geo // empty')"
+  CONTROL_NODE_HOST="$(printf '%s' "${PREVIOUS_DESIRED}" | jq -r '.node.host // empty')"
   CONTROL_NODE_PORT="$(printf '%s' "${PREVIOUS_DESIRED}" | jq -r '.node.port // 443')"
   CONTROL_NODE_SNI="$(printf '%s' "${PREVIOUS_DESIRED}" | jq -r '.node.sni // empty')"
 
-  if [ -z "${CONTROL_NODE_NAME}" ] || [ -z "${CONTROL_NODE_GEO}" ] || [ -z "${CONTROL_NODE_SNI}" ]; then
+  if [ -z "${CONTROL_NODE_NAME}" ] || [ -z "${CONTROL_NODE_GEO}" ] || \
+     [ -z "${CONTROL_NODE_HOST}" ] || [ -z "${CONTROL_NODE_SNI}" ]; then
     echo "Control plane returned incomplete node metadata." >&2
     exit 11
   fi
+
   if [ -n "${ARG_NODE_NAME}" ] && [ "${ARG_NODE_NAME}" != "${CONTROL_NODE_NAME}" ]; then
-    echo "Renaming an enrolled node during reinstall is intentionally blocked." >&2
+    echo "Renaming an enrolled node during runtime update is blocked." >&2
+    exit 4
+  fi
+  if [ -n "${ARG_NODE_GEO}" ] && [ "${ARG_NODE_GEO}" != "${CONTROL_NODE_GEO}" ]; then
+    echo "Changing node geography during runtime update is blocked." >&2
+    exit 4
+  fi
+  if [ -n "${ARG_NODE_HOST}" ] && [ "${ARG_NODE_HOST}" != "${CONTROL_NODE_HOST}" ]; then
+    echo "Changing node host during runtime update is blocked." >&2
+    exit 4
+  fi
+  if [ -n "${ARG_PORT}" ] && [ "${ARG_PORT}" != "${CONTROL_NODE_PORT}" ]; then
+    echo "Changing node port during runtime update is blocked." >&2
+    exit 4
+  fi
+  if [ -n "${ARG_SNI}" ] && [ "${ARG_SNI}" != "${CONTROL_NODE_SNI}" ]; then
+    echo "Changing REALITY SNI during runtime update is blocked." >&2
     exit 4
   fi
 
   NODE_NAME="${CONTROL_NODE_NAME}"
-  NODE_GEO="${ARG_NODE_GEO:-${CONTROL_NODE_GEO}}"
-  NODE_HOST="${ARG_NODE_HOST:-${NODE_HOST:-}}"
-  NODE_PORT="${ARG_PORT:-${NODE_PORT:-${CONTROL_NODE_PORT}}}"
-  REALITY_SNI="${ARG_SNI:-${REALITY_SNI:-${CONTROL_NODE_SNI}}}"
+  NODE_GEO="${CONTROL_NODE_GEO}"
+  NODE_HOST="${CONTROL_NODE_HOST}"
+  NODE_PORT="${CONTROL_NODE_PORT}"
+  REALITY_SNI="${CONTROL_NODE_SNI}"
 
   KEY_INFO="$("${CANDIDATE}" x25519 -i "${REALITY_PRIVATE_KEY}")"
   REALITY_PUBLIC_KEY="$(printf '%s\n' "${KEY_INFO}" | awk -F': *' 'tolower($1) ~ /publickey/ || tolower($1) ~ /^password/ {print $2; exit}')"
@@ -279,17 +298,10 @@ if [ "${EXISTING}" -eq 0 ]; then
     exit 10
   fi
 else
-  NODE_AUTH="Authorization: Bearer ${NODE_TOKEN}"
-  if ! curl -fsS --connect-timeout 8 --max-time 20       -H "${NODE_AUTH}"       "${CONTROL_URL}/api/v1/nodes/${NODE_ID}/desired" >/dev/null; then
-    echo "Stored node credentials are no longer accepted." >&2
-    echo "No identity/key rotation was attempted. Delete/recover this node from admin, then reinstall explicitly." >&2
-    exit 11
-  fi
-
-  ANNOUNCE_JSON="$(jq -n     --arg geo "${NODE_GEO}"     --arg host "${NODE_HOST}"     --arg sni "${REALITY_SNI}"     --arg pk "${REALITY_PUBLIC_KEY}"     --arg sid "${REALITY_SHORT_ID}"     --argjson port "${NODE_PORT}"     '{geo:$geo,host:$host,port:$port,sni:$sni,public_key:$pk,short_id:$sid}')"
-
-  curl -fsS --connect-timeout 8 --max-time 20     -H "${NODE_AUTH}" -H 'Content-Type: application/json'     -d "${ANNOUNCE_JSON}"     "${CONTROL_URL}/api/v1/nodes/${NODE_ID}/announce" >/dev/null
+  echo "Existing node credentials verified; preserving enrolled network identity."
 fi
+
+backup_existing_runtime
 
 {
   printf 'CONTROL_URL=%q\n' "${CONTROL_URL}"

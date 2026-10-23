@@ -2,12 +2,15 @@
 set -Eeuo pipefail
 
 BACKUP="${1:-}"
-ENV_FILE="/etc/vpnx7/control.env"
-DATA_DIR="/var/lib/vpnx7"
-BACKUP_DIR="/var/backups/vpnx7"
-INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEFAULT_INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="${VPNX7_ENV_FILE:-/etc/vpnx7/control.env}"
+DATA_DIR="${VPNX7_DATA_DIR:-/var/lib/vpnx7}"
+BACKUP_DIR="${VPNX7_BACKUP_DIR:-/var/backups/vpnx7}"
+INSTALL_DIR="${VPNX7_INSTALL_DIR:-${DEFAULT_INSTALL_DIR}}"
 RUNTIME_PYTHON="${INSTALL_DIR}/.venv/bin/python"
 BACKUP_SCRIPT="${INSTALL_DIR}/scripts/backup-db.py"
+HEALTH_ATTEMPTS="${VPNX7_HEALTH_ATTEMPTS:-20}"
+HEALTH_SLEEP="${VPNX7_HEALTH_SLEEP:-1}"
 
 if [ "${EUID}" -ne 0 ]; then
   echo "Run as root." >&2
@@ -75,12 +78,12 @@ rm -f "${DB}-wal" "${DB}-shm"
 
 if systemctl start vpnx7-control.service; then
   RESTORE_OK=0
-  for _ in $(seq 1 20); do
+  for _ in $(seq 1 "${HEALTH_ATTEMPTS}"); do
     if curl -fsS --max-time 2 "http://127.0.0.1:${CONTROL_PORT}/healthz" >/dev/null 2>&1; then
       RESTORE_OK=1
       break
     fi
-    sleep 1
+    sleep "${HEALTH_SLEEP}"
   done
 else
   RESTORE_OK=0
@@ -109,7 +112,7 @@ rm -f "${DB}-wal" "${DB}-shm"
 systemctl start vpnx7-control.service
 
 ROLLBACK_OK=0
-for _ in $(seq 1 20); do
+for _ in $(seq 1 "${HEALTH_ATTEMPTS}"); do
   if curl -fsS --max-time 2 "http://127.0.0.1:${CONTROL_PORT}/healthz" >/dev/null 2>&1; then
     ROLLBACK_OK=1
     break

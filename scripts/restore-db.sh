@@ -5,6 +5,7 @@ BACKUP="${1:-}"
 ENV_FILE="/etc/vpnx7/control.env"
 DATA_DIR="/var/lib/vpnx7"
 BACKUP_DIR="/var/backups/vpnx7"
+INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if [ "${EUID}" -ne 0 ]; then
   echo "Run as root." >&2
@@ -49,7 +50,7 @@ install -d -m 0700 "${BACKUP_DIR}"
 PRE_BACKUP=""
 if [ -f "${DB}" ]; then
   PRE_BACKUP="$(
-    VPNX7_DATABASE="${DB}"     VPNX7_BACKUP_DIR="${BACKUP_DIR}"     VPNX7_BACKUP_RETENTION=14       /opt/vpnx7/.venv/bin/python /opt/vpnx7/scripts/backup-db.py
+    VPNX7_DATABASE="${DB}"     VPNX7_BACKUP_DIR="${BACKUP_DIR}"     VPNX7_BACKUP_RETENTION=14       "${INSTALL_DIR}/.venv/bin/python" "${INSTALL_DIR}/scripts/backup-db.py"
   )"
   [ -f "${PRE_BACKUP}" ] || {
     echo "Could not create pre-restore backup." >&2

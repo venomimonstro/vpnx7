@@ -117,7 +117,7 @@ for _ in $(seq 1 "${HEALTH_ATTEMPTS}"); do
     ROLLBACK_OK=1
     break
   fi
-  sleep 1
+  sleep "${HEALTH_SLEEP}"
 done
 
 if [ "${ROLLBACK_OK}" -ne 1 ]; then

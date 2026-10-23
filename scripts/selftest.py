@@ -117,6 +117,27 @@ with TestClient(app) as client:
     if f"incy://import/https://vpn.test/sub/{sub_token}" not in page:
         raise AssertionError("INCY import deep-link is missing")
 
+    # A reported runtime failure must remove the node immediately, not only after
+    # the freshness window expires. A later successful report restores it.
+    expect(
+        client.post(
+            f"/api/v1/nodes/{node_id}/report",
+            headers=node_auth,
+            json={"ok": False, "xray_version": "Xray 26.10.21", "error": "synthetic failure"},
+        ),
+        200,
+    )
+    expect(client.get(f"/sub/{sub_token}"), 503)
+    expect(
+        client.post(
+            f"/api/v1/nodes/{node_id}/report",
+            headers=node_auth,
+            json={"ok": True, "xray_version": "Xray 26.10.21"},
+        ),
+        200,
+    )
+    expect(client.get(f"/sub/{sub_token}"), 200)
+
     expect(client.post(f"/api/admin/clients/{created['id']}/toggle", headers=ADMIN), 200)
     expect(client.get(f"/sub/{sub_token}"), 404)
     expect(client.post(f"/api/admin/clients/{created['id']}/toggle", headers=ADMIN), 200)

@@ -52,8 +52,8 @@ fi
 install -d -m 0750 -o root -g vpnx7-node /etc/vpnx7-node /etc/xray
 
 KEYS="$(xray x25519)"
-PRIVATE_KEY="$(printf '%s\n' "${KEYS}" | awk -F': ' 'tolower($1) ~ /private/ {print $2; exit}')"
-PUBLIC_KEY="$(printf '%s\n' "${KEYS}" | awk -F': ' ' 'tolower($1) ~ /public/ {print $2; exit}')"
+PRIVATE_KEY="$(printf '%s\n' "${KEYS}" | awk -F': *' 'tolower($1) ~ /^private ?key$/ || tolower($1) == "privatekey" {print $2; exit}')"
+PUBLIC_KEY="$(printf '%s\n' "${KEYS}" | awk -F': *' 'tolower($1) ~ /publickey/ || tolower($1) ~ /^password/ {print $2; exit}')"
 if [ -z "${PRIVATE_KEY}" ] || [ -z "${PUBLIC_KEY}" ]; then
   echo "Could not parse Reality keys from xray x25519." >&2
   printf '%s\n' "${KEYS}" >&2
@@ -139,7 +139,7 @@ jq -n   --argjson port "$NODE_PORT"   --arg sni "$REALITY_SNI"   --arg privateKe
   routing:{
     domainStrategy:"IPIfNonMatch",
     rules:[
-      {type:"field",ip:["geoip:private"],outboundTag:"blocked"},
+      {type:"field",ip:["10.0.0.0/8","172.16.0.0/12","192.168.0.0/16","127.0.0.0/8","169.254.0.0/16","::1/128","fc00::/7","fe80::/10"],outboundTag:"blocked"},
       {type:"field",protocol:["bittorrent"],outboundTag:"blocked"}
     ]
   }

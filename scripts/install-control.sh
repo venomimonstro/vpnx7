@@ -115,7 +115,13 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y --no-install-recommends   ca-certificates curl git gzip openssl python3 python3-venv
+apt-get install -y --no-install-recommends   ca-certificates curl git gzip openssl python3 python3-venv util-linux
+
+exec 9>/run/lock/vpnx7-control-install.lock
+if ! flock -n 9; then
+  echo "Another VPNX7 control install/update is already running." >&2
+  exit 20
+fi
 
 if ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
   echo "VPNX7 control plane requires Python >= 3.10." >&2
@@ -311,6 +317,11 @@ systemctl is-active --quiet vpnx7-bot.service && BOT_WAS_ACTIVE_BEFORE=1 || true
 systemctl is-enabled --quiet vpnx7-bot.service && BOT_WAS_ENABLED_BEFORE=1 || true
 systemctl is-active --quiet vpnx7-backup.timer && BACKUP_TIMER_WAS_ACTIVE_BEFORE=1 || true
 systemctl is-enabled --quiet vpnx7-backup.timer && BACKUP_TIMER_WAS_ENABLED_BEFORE=1 || true
+
+# Do not allow a scheduled backup process to start while the release directory
+# and its Python runtime are being atomically replaced.
+systemctl stop vpnx7-backup.timer >/dev/null 2>&1 || true
+systemctl stop vpnx7-backup.service >/dev/null 2>&1 || true
 
 backup_units
 

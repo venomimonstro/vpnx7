@@ -8,7 +8,28 @@ fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
-trap 'rm -rf "${TMP}"' EXIT
+CREATED_USER=0
+CREATED_GROUP=0
+
+cleanup() {
+  rm -rf "${TMP}"
+  if [ "${CREATED_USER}" -eq 1 ]; then
+    userdel vpnx7 >/dev/null 2>&1 || true
+  fi
+  if [ "${CREATED_GROUP}" -eq 1 ]; then
+    groupdel vpnx7 >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+if ! getent group vpnx7 >/dev/null 2>&1; then
+  groupadd --system vpnx7
+  CREATED_GROUP=1
+fi
+if ! id vpnx7 >/dev/null 2>&1; then
+  useradd --system --gid vpnx7 --home /nonexistent --shell /usr/sbin/nologin vpnx7
+  CREATED_USER=1
+fi
 
 INSTALL="${TMP}/install"
 DATA="${TMP}/data"

@@ -227,7 +227,8 @@ source /etc/vpnx7-node/node.env
 TMP="$(mktemp)"
 CFG="$(mktemp)"
 BACKUP="$(mktemp)"
-trap 'rm -f "$TMP" "$CFG" "$BACKUP"' EXIT
+XRAY_TEST_LOG="$(mktemp)"
+trap 'rm -f "$TMP" "$CFG" "$BACKUP" "$XRAY_TEST_LOG"' EXIT
 
 report_failure() {
   local code="$?"
@@ -281,7 +282,11 @@ jq -n   --argjson port "$NODE_PORT"   --arg sni "$REALITY_SNI"   --arg privateKe
   }
 }' >"$CFG"
 
-/usr/local/bin/xray run -test -config "$CFG" >/dev/null
+if ! /usr/local/bin/xray run -test -config "$CFG" >"$XRAY_TEST_LOG" 2>&1; then
+  echo "Generated Xray config failed validation:" >&2
+  cat "$XRAY_TEST_LOG" >&2
+  false
+fi
 
 CHANGED=0
 HAD_PREVIOUS=0
@@ -298,7 +303,10 @@ restart_and_verify() {
   systemctl restart vpnx7-xray.service
   sleep 2
   systemctl is-active --quiet vpnx7-xray.service
-  /usr/local/bin/xray run -test -config /etc/xray/config.json >/dev/null
+  if ! /usr/local/bin/xray run -test -config /etc/xray/config.json >"$XRAY_TEST_LOG" 2>&1; then
+    cat "$XRAY_TEST_LOG" >&2
+    return 1
+  fi
   ss -ltnH "sport = :$NODE_PORT" | grep -q .
 }
 
@@ -316,7 +324,10 @@ if [ "$CHANGED" -eq 1 ]; then
 elif ! systemctl is-active --quiet vpnx7-xray.service; then
   restart_and_verify
 else
-  /usr/local/bin/xray run -test -config /etc/xray/config.json >/dev/null
+  if ! /usr/local/bin/xray run -test -config /etc/xray/config.json >"$XRAY_TEST_LOG" 2>&1; then
+    cat "$XRAY_TEST_LOG" >&2
+    false
+  fi
   ss -ltnH "sport = :$NODE_PORT" | grep -q .
 fi
 

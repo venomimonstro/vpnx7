@@ -55,7 +55,7 @@ chmod 0600 /etc/vpnx7-node/node.env
 
 echo "selftest: extract node runtime"
 awk '
-  /cat >\/usr\/local\/sbin\/vpnx7-node-sync <<'\''SYNC'\''/ { capture=1; next }
+  /cat >"\$\{SYNC_STAGE\}" <<'\''SYNC'\''/ { capture=1; next }
   capture && /^SYNC$/ { exit }
   capture { print }
 ' "${INSTALLER}" >"${TMP}/node-sync.sh"
@@ -73,7 +73,7 @@ for arg in "$@"; do
   case "$arg" in
     */desired)
       cat <<'JSON'
-{"node":{"id":"11111111-1111-4111-8111-111111111111","name":"test-node","geo":"Test","port":443,"sni":"www.microsoft.com","enabled":true},"clients":[{"id":"c1","name":"test","uuid":"22222222-2222-4222-8222-222222222222","email":"vpnx7-test","flow":"xtls-rprx-vision"}]}
+{"node":{"id":"11111111-1111-4111-8111-111111111111","name":"test-node","geo":"Test","host":"203.0.113.10","port":443,"sni":"www.microsoft.com","enabled":true},"clients":[{"id":"c1","name":"test","uuid":"22222222-2222-4222-8222-222222222222","email":"vpnx7-test","flow":"xtls-rprx-vision"}]}
 JSON
       exit 0
       ;;

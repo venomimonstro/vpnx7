@@ -146,8 +146,11 @@ CANDIDATE="${TMP_DIR}/xray/xray"
 chmod 0755 "${CANDIDATE}"
 "${CANDIDATE}" version | head -n1
 
+if ! getent group vpnx7-node >/dev/null 2>&1; then
+  groupadd --system vpnx7-node
+fi
 if ! id vpnx7-node >/dev/null 2>&1; then
-  useradd --system --home /nonexistent --shell /usr/sbin/nologin vpnx7-node
+  useradd --system --gid vpnx7-node --home /nonexistent --shell /usr/sbin/nologin vpnx7-node
 fi
 install -d -m 0750 -o root -g vpnx7-node "${ENV_DIR}" "${CONFIG_DIR}"
 

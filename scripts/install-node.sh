@@ -152,9 +152,19 @@ if ss -ltnH "sport = :${NODE_PORT}" | grep -q . &&    ! systemctl is-active --qu
   exit 6
 fi
 
-if ! timeout 15 "${CANDIDATE}" tls ping "${REALITY_SNI}" >/dev/null 2>&1; then
-  echo "REALITY target ${REALITY_SNI} failed Xray TLS preflight." >&2
-  echo "Choose another VPNX7_REALITY_SNI that is reachable and supports a normal TLS handshake." >&2
+TLS_PING_OUTPUT="$(timeout 20 "${CANDIDATE}" tls ping "${REALITY_SNI}" 2>&1)" || {
+  echo "REALITY target ${REALITY_SNI} could not be reached by Xray TLS preflight." >&2
+  printf '%s\n' "${TLS_PING_OUTPUT}" >&2
+  exit 7
+}
+if ! printf '%s\n' "${TLS_PING_OUTPUT}" | awk '
+  /Pinging with SNI/ { in_sni=1; next }
+  in_sni && /Handshake succeeded/ { ok=1 }
+  END { exit(ok ? 0 : 1) }
+'; then
+  echo "REALITY target ${REALITY_SNI} did not complete a TLS handshake with SNI." >&2
+  printf '%s\n' "${TLS_PING_OUTPUT}" >&2
+  echo "Choose another VPNX7_REALITY_SNI." >&2
   exit 7
 fi
 
@@ -243,7 +253,22 @@ trap report_failure ERR
 
 curl -fsS --retry 2 --retry-all-errors --connect-timeout 8 --max-time 25   -H "Authorization: Bearer $NODE_TOKEN"   "$CONTROL_URL/api/v1/nodes/$NODE_ID/desired" >"$TMP"
 
+DESIRED_ENABLED="$(jq -er '.node.enabled | if . == true then "true" elif . == false then "false" else error("node.enabled missing") end' "$TMP")"
 CLIENTS="$(jq -ce '.clients | if type=="array" then . else error("clients must be array") end' "$TMP")"
+
+if [ "$DESIRED_ENABLED" != "true" ]; then
+  systemctl disable --now vpnx7-xray.service >/dev/null 2>&1 || true
+  XVER="$(/usr/local/bin/xray version | head -n1)"
+  curl -fsS --connect-timeout 5 --max-time 10 \
+    -H "Authorization: Bearer $NODE_TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d "$(jq -n --arg v "$XVER" '{ok:true,xray_version:$v}')" \
+    "$CONTROL_URL/api/v1/nodes/$NODE_ID/report" >/dev/null
+  echo "VPNX7 node is administratively disabled; Xray stopped."
+  exit 0
+fi
+
+systemctl enable vpnx7-xray.service >/dev/null
 
 jq -n   --argjson port "$NODE_PORT"   --arg sni "$REALITY_SNI"   --arg privateKey "$REALITY_PRIVATE_KEY"   --arg shortId "$REALITY_SHORT_ID"   --argjson clients "$CLIENTS" '{
   log:{loglevel:"warning"},
@@ -413,7 +438,6 @@ install -d -m 0755 /usr/local/share/xray
 [ ! -f "${TMP_DIR}/xray/geosite.dat" ] || install -m 0644 "${TMP_DIR}/xray/geosite.dat" /usr/local/share/xray/geosite.dat
 
 systemctl daemon-reload
-systemctl enable vpnx7-xray.service >/dev/null
 systemctl enable --now vpnx7-node-sync.timer >/dev/null
 
 echo "[7/8] Applying desired state..."
@@ -427,14 +451,27 @@ if ! systemctl start vpnx7-node-sync.service; then
 fi
 
 echo "[8/8] Final node verification..."
-systemctl is-active --quiet vpnx7-xray.service
 systemctl is-active --quiet vpnx7-node-sync.timer
-"${XRAY_BIN}" run -test -config "${CONFIG_FILE}" >/dev/null
-ss -ltnH "sport = :${NODE_PORT}" | grep -q .
-curl -fsS --connect-timeout 5 --max-time 10   -H "Authorization: Bearer ${NODE_TOKEN}"   "${CONTROL_URL}/api/v1/nodes/${NODE_ID}/desired" >/dev/null
+FINAL_DESIRED="$(curl -fsS --connect-timeout 5 --max-time 10 \
+  -H "Authorization: Bearer ${NODE_TOKEN}" \
+  "${CONTROL_URL}/api/v1/nodes/${NODE_ID}/desired")"
+FINAL_ENABLED="$(printf '%s' "${FINAL_DESIRED}" | jq -r '.node.enabled')"
+
+if [ "${FINAL_ENABLED}" = "true" ]; then
+  systemctl is-active --quiet vpnx7-xray.service
+  "${XRAY_BIN}" run -test -config "${CONFIG_FILE}" >/dev/null
+  ss -ltnH "sport = :${NODE_PORT}" | grep -q .
+  STATUS_TEXT="healthy and serving"
+else
+  if systemctl is-active --quiet vpnx7-xray.service; then
+    echo "Disabled node unexpectedly has Xray running." >&2
+    exit 13
+  fi
+  STATUS_TEXT="healthy, administratively disabled"
+fi
 
 echo
-echo "VPNX7 node is healthy."
+echo "VPNX7 node is ${STATUS_TEXT}."
 echo "Node:    ${NODE_NAME} (${NODE_GEO})"
 echo "Host:    ${NODE_HOST}:${NODE_PORT}"
 echo "Xray:    $("${XRAY_BIN}" version | head -n1)"
